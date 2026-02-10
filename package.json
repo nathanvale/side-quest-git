@@ -1,5 +1,5 @@
 {
-	"name": "@nathanvale/side-quest-git",
+	"name": "@side-quest/git",
 	"version": "0.0.0",
 	"description": "Git utilities and safety hooks for Claude Code",
 	"author": {
@@ -14,6 +14,42 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
+		},
+		"./safety": {
+			"types": "./dist/safety/index.d.ts",
+			"import": "./dist/safety/index.js"
+		},
+		"./git": {
+			"types": "./dist/git/index.d.ts",
+			"import": "./dist/git/index.js"
+		},
+		"./context": {
+			"types": "./dist/context/index.d.ts",
+			"import": "./dist/context/index.js"
+		},
+		"./cortex": {
+			"types": "./dist/cortex/index.d.ts",
+			"import": "./dist/cortex/index.js"
+		},
+		"./auto-commit": {
+			"types": "./dist/auto-commit/index.d.ts",
+			"import": "./dist/auto-commit/index.js"
+		},
+		"./logger": {
+			"types": "./dist/logger/index.d.ts",
+			"import": "./dist/logger/index.js"
+		},
+		"./jsonl": {
+			"types": "./dist/jsonl/index.d.ts",
+			"import": "./dist/jsonl/index.js"
+		},
+		"./worktree": {
+			"types": "./dist/worktree/index.d.ts",
+			"import": "./dist/worktree/index.js"
+		},
+		"./worktree/cli": {
+			"types": "./dist/worktree/cli.d.ts",
+			"import": "./dist/worktree/cli.js"
 		},
 		"./package.json": "./package.json"
 	},
@@ -45,7 +81,7 @@
 	},
 	"sideEffects": false,
 	"scripts": {
-		"build": "bunx bunup",
+		"build": "tsc -p tsconfig.json",
 		"check": "biome check --write .",
 		"check:publint": "publint",
 		"check:types": "attw --pack",
@@ -81,7 +117,9 @@
 		"version:pre": "changeset version",
 		"watch:types": "tsc -p tsconfig.eslint.json --noEmit --watch"
 	},
-	"dependencies": {},
+	"dependencies": {
+		"@side-quest/core": "^0.3.1"
+	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "^0.18.2",
 		"@biomejs/biome": "^2.3.7",
@@ -102,5 +140,8 @@
 		"*.{ts,tsx,js,jsx,mts,cts,json}": [
 			"biome check --write"
 		]
+	},
+	"bin": {
+		"side-quest-git": "./dist/worktree/cli.js"
 	}
 }
