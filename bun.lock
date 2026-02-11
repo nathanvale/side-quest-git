@@ -5,7 +5,7 @@
     "": {
       "name": "{{PACKAGE_NAME}}",
       "dependencies": {
-        "@side-quest/core": "^0.3.1",
+        "@side-quest/core": "^0.4.0",
       },
       "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.2",
@@ -278,7 +278,7 @@
 
     "@publint/pack": ["@publint/pack@0.1.2", "", {}, "sha512-S+9ANAvUmjutrshV4jZjaiG8XQyuJIZ8a4utWmN/vW1sgQ9IfBnPndwkmQYw53QmouOIytT874u65HEmu6H5jw=="],
 
-    "@side-quest/core": ["@side-quest/core@0.3.1", "", { "dependencies": { "@logtape/file": "^0.12.0", "@logtape/logtape": "^0.12.0", "@modelcontextprotocol/sdk": "^1.20.0", "zod": "^3.23.8" } }, "sha512-X1OEHC+STyCVVSSX0QWJJh11tqp8Vcfq5Yn04+bTf3WArQ10RYKuFSXUmmCp2u+N4HByCTkQGzm0VocXz5nNIA=="],
+    "@side-quest/core": ["@side-quest/core@0.4.0", "", { "dependencies": { "@logtape/file": "^0.12.0", "@logtape/logtape": "^0.12.0", "@modelcontextprotocol/sdk": "^1.20.0", "zod": "^3.23.8" } }, "sha512-yj2tC5MOa602+DQg01096FaIDp3O4YJoOoNrN5xHdUdwFdQ5lPTsZShIXxfRJ/rve6PTKo0b6fcLYnRtBJ5Wcw=="],
 
     "@sindresorhus/is": ["@sindresorhus/is@4.6.0", "", {}, "sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw=="],
 

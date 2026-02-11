@@ -122,7 +122,7 @@
 		"watch:types": "tsc -p tsconfig.eslint.json --noEmit --watch"
 	},
 	"dependencies": {
-		"@side-quest/core": "^0.3.1"
+		"@side-quest/core": "^0.4.0"
 	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "^0.18.2",
