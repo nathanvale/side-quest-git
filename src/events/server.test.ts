@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { getRepoCacheKey } from './cache-key.js'
 import { createEvent } from './schema.js'
-import { type EventServer, startEventServer } from './server.js'
+import { type EventServer, readEventServerPort, startEventServer } from './server.js'
 import { EventStore } from './store.js'
 import type { EventEnvelope } from './types.js'
 
@@ -142,19 +143,31 @@ describe('EventStore', () => {
 
 describe('Event Server HTTP', () => {
 	let server: EventServer
+	let serverGitRoot: string
 
 	beforeEach(() => {
 		// Use port 0 for auto-assign to avoid conflicts
+		serverGitRoot = `/tmp/test-http-${Date.now()}-${Math.random().toString(36).slice(2)}`
 		server = startEventServer({
 			port: 0,
 			repoName: `test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-			gitRoot: testGitRoot,
+			gitRoot: serverGitRoot,
 			capacity: 100,
 		})
 	})
 
 	afterEach(() => {
 		server.stop()
+	})
+
+	test('binds to localhost by default', () => {
+		expect(server.hostname).toBe('127.0.0.1')
+	})
+
+	test('writes discovery files using gitRoot-derived cache key', () => {
+		const cacheKey = getRepoCacheKey(serverGitRoot)
+		const discoveredPort = readEventServerPort(cacheKey)
+		expect(discoveredPort).toBe(server.port)
 	})
 
 	test('POST /events stores event and returns 201', async () => {
@@ -280,10 +293,11 @@ describe('Event Server WebSocket', () => {
 	let server: EventServer
 
 	beforeEach(() => {
+		const serverGitRoot = `/tmp/test-ws-${Date.now()}-${Math.random().toString(36).slice(2)}`
 		server = startEventServer({
 			port: 0,
 			repoName: `test-ws-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-			gitRoot: testGitRoot,
+			gitRoot: serverGitRoot,
 			capacity: 100,
 		})
 	})

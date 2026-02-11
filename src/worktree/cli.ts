@@ -10,8 +10,9 @@
 import path from 'node:path'
 import { parseArgs } from '@side-quest/core/cli'
 import { getErrorMessage } from '@side-quest/core/utils'
+import { getRepoCacheKey } from '../events/cache-key.js'
 import { emitCliEvent } from '../events/emit.js'
-import { getGitRoot } from '../git/git-root.js'
+import { getMainRoot } from '../git/git-root.js'
 import { loadOrDetectConfig, writeConfig } from './config.js'
 import { createWorktree } from './create.js'
 import { checkBeforeDelete, deleteWorktree } from './delete.js'
@@ -33,7 +34,7 @@ async function main(): Promise<void> {
 
 	// Handle the events top-level command
 	if (command === 'events') {
-		const gitRoot = await getGitRoot(process.cwd())
+		const gitRoot = await getMainRoot(process.cwd())
 		if (!gitRoot) {
 			fail('Not in a git repository')
 		}
@@ -48,7 +49,7 @@ async function main(): Promise<void> {
 	const worktreeCommand = subcommand || ''
 	const args = positional
 
-	const gitRoot = await getGitRoot(process.cwd())
+	const gitRoot = await getMainRoot(process.cwd())
 	if (!gitRoot) {
 		fail('Not in a git repository')
 	}
@@ -205,11 +206,7 @@ async function main(): Promise<void> {
 			const watchFlag = flags.watch === true
 
 			if (watchFlag) {
-				const intervalRaw = flags.interval
-				const interval =
-					typeof intervalRaw === 'string'
-						? Number.parseInt(intervalRaw, 10) * 1000
-						: undefined
+				const interval = parseWatchIntervalMs(flags.interval)
 				const { watchWorktreeStatus } = await import('./watch.js')
 				await watchWorktreeStatus(gitRoot, {
 					interval,
@@ -286,7 +283,8 @@ async function handleEventsCommand(
 	flags: Record<string, string | boolean | (string | boolean)[]>,
 	gitRoot: string,
 ): Promise<void> {
-	const repoName = path.basename(gitRoot)
+	const repoDisplayName = path.basename(gitRoot)
+	const repoCacheKey = getRepoCacheKey(gitRoot)
 
 	switch (eventsSubcommand) {
 		case 'start': {
@@ -294,7 +292,12 @@ async function handleEventsCommand(
 			const port =
 				typeof portRaw === 'string' ? Number.parseInt(portRaw, 10) : 7483
 			const { startEventServer } = await import('../events/server.js')
-			const server = startEventServer({ port, repoName, gitRoot })
+			const server = startEventServer({
+				port,
+				repoName: repoDisplayName,
+				cacheKey: repoCacheKey,
+				gitRoot,
+			})
 			output({ status: 'started', port: server.port, pid: process.pid })
 			// Keep the process alive until interrupted
 			process.on('SIGINT', () => {
@@ -314,10 +317,10 @@ async function handleEventsCommand(
 			const typeRaw = flags.type
 			const typeFilter = typeof typeRaw === 'string' ? typeRaw : undefined
 			const { readEventServerPort } = await import('../events/server.js')
-			const port = readEventServerPort(repoName)
+			const port = readEventServerPort(repoCacheKey)
 			if (!port) {
 				fail(
-					`No running event server found for repo "${repoName}". Run: side-quest-git events start`,
+					`No running event server found for repo "${repoDisplayName}". Run: side-quest-git events start`,
 				)
 			}
 			const { connectEventClient } = await import('../events/client.js')
@@ -342,6 +345,33 @@ async function handleEventsCommand(
 				`Unknown events command: ${eventsSubcommand || '(none)'}. Available: start, tail`,
 			)
 	}
+}
+
+/**
+ * Parse and validate the `--interval` flag for watch mode.
+ *
+ * Why: Invalid or non-positive values can cause a tight polling loop.
+ */
+function parseWatchIntervalMs(
+	intervalFlag: string | boolean | (string | boolean)[] | undefined,
+): number | undefined {
+	if (intervalFlag === undefined) {
+		return undefined
+	}
+	if (typeof intervalFlag !== 'string') {
+		fail('Invalid --interval value: expected a positive integer in seconds')
+	}
+
+	if (!/^\d+$/.test(intervalFlag)) {
+		fail('Invalid --interval value: expected a positive integer in seconds')
+	}
+
+	const intervalSeconds = Number.parseInt(intervalFlag, 10)
+	if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
+		fail('Invalid --interval value: expected a positive integer in seconds')
+	}
+
+	return intervalSeconds * 1000
 }
 
 main().catch((error) => {

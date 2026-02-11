@@ -7,8 +7,8 @@
  */
 
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
+import { getEventCacheDir, getRepoCacheKey } from './cache-key.js'
 import { createEvent } from './schema.js'
 import type { EventContext, EventEnvelope, EventType } from './types.js'
 
@@ -18,11 +18,11 @@ import type { EventContext, EventEnvelope, EventType } from './types.js'
  * Why: Fast path -- if no PID file exists, skip HTTP entirely.
  * Checking a file takes <1ms vs. HTTP connection setup.
  *
- * @param repoName - Repository directory name used for cache lookups
+ * @param cacheKey - Stable repository cache key used for cache lookups
  * @returns The port number if the server is running, null otherwise
  */
-export function isEventServerRunning(repoName: string): number | null {
-	const cacheDir = path.join(os.homedir(), '.cache', 'side-quest-git', repoName)
+export function isEventServerRunning(cacheKey: string): number | null {
+	const cacheDir = getEventCacheDir(cacheKey)
 	const pidPath = path.join(cacheDir, 'events.pid')
 	const portPath = path.join(cacheDir, 'events.port')
 
@@ -83,8 +83,8 @@ export async function emitCliEvent<T>(
 	data: T,
 	context: EventContext,
 ): Promise<void> {
-	const repoName = path.basename(context.gitRoot)
-	const port = isEventServerRunning(repoName)
+	const cacheKey = getRepoCacheKey(context.gitRoot)
+	const port = isEventServerRunning(cacheKey)
 	if (port === null) return // Fast path: no server
 
 	const event = createEvent(type, data, context)

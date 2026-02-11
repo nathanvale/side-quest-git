@@ -8,23 +8,23 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import type { Server } from 'bun'
+import { getEventCacheDir, getRepoCacheKey } from './cache-key.js'
 import { emitCliEvent, emitEvent, isEventServerRunning } from './emit.js'
 import { createEvent } from './schema.js'
 import type { EventServer } from './server.js'
 
 describe('isEventServerRunning', () => {
 	test('returns null when no PID file exists', () => {
-		// Use a repo name that definitely has no cache files
-		const result = isEventServerRunning('nonexistent-repo-xyz-12345')
+		// Use a cache key that definitely has no cache files
+		const result = isEventServerRunning(getRepoCacheKey('/tmp/nonexistent-repo-xyz-12345'))
 		expect(result).toBeNull()
 	})
 
 	test('returns port when PID and port files exist for a live process', () => {
-		const repoName = `test-repo-${Date.now()}`
-		const cacheDir = path.join(os.homedir(), '.cache', 'side-quest-git', repoName)
+		const cacheKey = getRepoCacheKey(`/tmp/test-repo-${Date.now()}`)
+		const cacheDir = getEventCacheDir(cacheKey)
 		fs.mkdirSync(cacheDir, { recursive: true })
 
 		try {
@@ -32,7 +32,7 @@ describe('isEventServerRunning', () => {
 			fs.writeFileSync(path.join(cacheDir, 'events.pid'), String(process.pid))
 			fs.writeFileSync(path.join(cacheDir, 'events.port'), '9999')
 
-			const result = isEventServerRunning(repoName)
+			const result = isEventServerRunning(cacheKey)
 			expect(result).toBe(9999)
 		} finally {
 			// Cleanup
@@ -41,8 +41,8 @@ describe('isEventServerRunning', () => {
 	})
 
 	test('returns null when PID file references a dead process', () => {
-		const repoName = `test-repo-dead-${Date.now()}`
-		const cacheDir = path.join(os.homedir(), '.cache', 'side-quest-git', repoName)
+		const cacheKey = getRepoCacheKey(`/tmp/test-repo-dead-${Date.now()}`)
+		const cacheDir = getEventCacheDir(cacheKey)
 		fs.mkdirSync(cacheDir, { recursive: true })
 
 		try {
@@ -50,7 +50,7 @@ describe('isEventServerRunning', () => {
 			fs.writeFileSync(path.join(cacheDir, 'events.pid'), '999999')
 			fs.writeFileSync(path.join(cacheDir, 'events.port'), '9999')
 
-			const result = isEventServerRunning(repoName)
+			const result = isEventServerRunning(cacheKey)
 			expect(result).toBeNull()
 		} finally {
 			fs.rmSync(cacheDir, { recursive: true, force: true })
@@ -64,10 +64,11 @@ describe('emitEvent', () => {
 	beforeEach(async () => {
 		// Dynamically import to avoid circular issues
 		const { startEventServer } = await import('./server.js')
+		const repoName = `emit-test-${Date.now()}`
 		server = startEventServer({
 			port: 0,
-			repoName: `emit-test-${Date.now()}`,
-			gitRoot: '/tmp/fake-git-root',
+			repoName,
+			gitRoot: `/tmp/${repoName}`,
 		})
 	})
 
@@ -195,6 +196,35 @@ describe('emitCliEvent', () => {
 			const stored = server.store.query({ type: 'worktree.created' })
 			expect(stored.length).toBe(1)
 			expect((stored[0]?.data as Record<string, unknown>).branch).toBe('feat/wired')
+		} finally {
+			server.stop()
+		}
+	})
+
+	test('does not collide across repos with the same basename', async () => {
+		const rootA = `/tmp/a-${Date.now()}/app`
+		const rootB = `/tmp/b-${Date.now()}/app`
+		const { startEventServer } = await import('./server.js')
+		const server = startEventServer({
+			port: 0,
+			repoName: 'app',
+			gitRoot: rootA,
+		})
+
+		try {
+			await emitCliEvent(
+				'worktree.created',
+				{ branch: 'feat/no-collision' },
+				{
+					repo: 'app',
+					gitRoot: rootB,
+					source: 'cli',
+				},
+			)
+
+			await Bun.sleep(50)
+			const stored = server.store.query({ type: 'worktree.created' })
+			expect(stored).toHaveLength(0)
 		} finally {
 			server.stop()
 		}

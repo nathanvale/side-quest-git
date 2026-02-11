@@ -286,5 +286,19 @@ describe('createWorktree', () => {
 			expect(result.syncResult!.filesCopied).toBe(0)
 			expect(result.syncResult!.filesSkipped).toBeGreaterThanOrEqual(1)
 		})
+
+		test('throws when sanitized path exists for a different branch', async () => {
+			await createWorktree(gitRoot, 'feat/a-b', {
+				noInstall: true,
+				noFetch: true,
+			})
+
+			await expect(
+				createWorktree(gitRoot, 'feat/a/b', {
+					noInstall: true,
+					noFetch: true,
+				}),
+			).rejects.toThrow('Refusing to attach')
+		})
 	})
 })

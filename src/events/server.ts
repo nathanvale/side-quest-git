@@ -13,7 +13,6 @@
  */
 
 import { unlinkSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import {
 	ensureDirSync,
@@ -22,6 +21,7 @@ import {
 	writeTextFileSync,
 } from '@side-quest/core/fs'
 import type { Server, ServerWebSocket } from 'bun'
+import { getEventCacheDir, getRepoCacheKey } from './cache-key.js'
 import { createEvent } from './schema.js'
 import { EventStore } from './store.js'
 import type { EventEnvelope, EventType } from './types.js'
@@ -30,10 +30,14 @@ import type { EventEnvelope, EventType } from './types.js'
 export interface ServerOptions {
 	/** Port to listen on (0 for auto-assign, default: 7483). */
 	readonly port?: number
-	/** Repository name used for cache directory naming. */
+	/** Repository name used for event payload defaults. */
 	readonly repoName: string
+	/** Stable cache key used for PID/port discovery files. */
+	readonly cacheKey?: string
 	/** Absolute path to the git root directory. */
 	readonly gitRoot: string
+	/** Host interface to bind to (default: 127.0.0.1). */
+	readonly hostname?: string
 	/** Ring buffer capacity (default: 1000). */
 	readonly capacity?: number
 	/** Path for JSONL persistence file. */
@@ -44,6 +48,8 @@ export interface ServerOptions {
 export interface EventServer {
 	/** The port the server is listening on. */
 	readonly port: number
+	/** Host interface the server is bound to. */
+	readonly hostname: string
 	/** The underlying event store. */
 	readonly store: EventStore
 	/** Stop the server and clean up PID/port files. */
@@ -53,16 +59,6 @@ export interface EventServer {
 /** WebSocket client data for type filtering. */
 interface WsClientData {
 	readonly typeFilter: string | null
-}
-
-/**
- * Get the cache directory for a repo's event server files.
- *
- * Why: PID and port files need a stable, per-repo location
- * that CLI commands can find to discover the running server.
- */
-function getCacheDir(repoName: string): string {
-	return path.join(os.homedir(), '.cache', 'side-quest-git', repoName)
 }
 
 /**
@@ -115,11 +111,11 @@ function removePidFiles(cacheDir: string): void {
  * Why: CLI commands need to discover the running server's port
  * to POST events or connect via WebSocket.
  *
- * @param repoName - Repository name
+ * @param cacheKey - Stable repo cache key
  * @returns Port number if server is running, null otherwise
  */
-export function readEventServerPort(repoName: string): number | null {
-	const cacheDir = getCacheDir(repoName)
+export function readEventServerPort(cacheKey: string): number | null {
+	const cacheDir = getEventCacheDir(cacheKey)
 	const portFile = path.join(cacheDir, 'events.port')
 	const pidFile = path.join(cacheDir, 'events.pid')
 
@@ -148,15 +144,23 @@ export function readEventServerPort(repoName: string): number | null {
  * @returns Running server handle with port, store, and stop()
  */
 export function startEventServer(options: ServerOptions): EventServer {
-	const { port = 7483, repoName, gitRoot, capacity, persistPath } = options
+	const {
+		port = 7483,
+		repoName,
+		gitRoot,
+		cacheKey = getRepoCacheKey(gitRoot),
+		hostname = '127.0.0.1',
+		capacity,
+		persistPath,
+	} = options
 
 	const store = new EventStore({ capacity, persistPath })
 	const clients = new Set<ServerWebSocket<WsClientData>>()
 	const startTime = Date.now()
-	const cacheDir = getCacheDir(repoName)
+	const cacheDir = getEventCacheDir(cacheKey)
 
 	// Check for stale PID
-	const existingPort = readEventServerPort(repoName)
+	const existingPort = readEventServerPort(cacheKey)
 	if (existingPort !== null) {
 		// Server already running
 		const pidFile = path.join(cacheDir, 'events.pid')
@@ -167,6 +171,7 @@ export function startEventServer(options: ServerOptions): EventServer {
 	}
 
 	const server: Server<WsClientData> = Bun.serve<WsClientData>({
+		hostname,
 		port,
 		fetch(req, server) {
 			const url = new URL(req.url)
@@ -220,6 +225,7 @@ export function startEventServer(options: ServerOptions): EventServer {
 
 	return {
 		port: actualPort as number,
+		hostname,
 		store,
 		stop() {
 			// Close all WebSocket connections
