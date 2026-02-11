@@ -1,5 +1,5 @@
 export { getCurrentBranch } from './current-branch.js'
-export { getGitRoot } from './git-root.js'
+export { getGitRoot, getMainRoot } from './git-root.js'
 export { getGitStateSummary } from './git-state-summary.js'
 export { isGitRepo } from './is-git-repo.js'
 export { getMainBranch } from './main-branch.js'

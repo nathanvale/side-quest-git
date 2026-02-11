@@ -51,6 +51,10 @@
 			"types": "./dist/worktree/cli.d.ts",
 			"import": "./dist/worktree/cli.js"
 		},
+		"./events": {
+			"types": "./dist/events/index.d.ts",
+			"import": "./dist/events/index.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"files": [

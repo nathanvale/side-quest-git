@@ -5,6 +5,7 @@
 export * from './auto-commit/index.js'
 export * from './context/index.js'
 export * from './cortex/index.js'
+export * from './events/index.js'
 export * from './git/index.js'
 export * from './jsonl/index.js'
 export * from './logger/index.js'

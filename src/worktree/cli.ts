@@ -1,13 +1,16 @@
 #!/usr/bin/env bun
 /**
- * Git worktree CLI.
+ * Git worktree and event bus CLI.
  *
  * Usage via package bin:
  *   bunx @side-quest/git worktree <command> [...args]
+ *   bunx @side-quest/git events <start|tail> [...args]
  */
 
+import path from 'node:path'
 import { parseArgs } from '@side-quest/core/cli'
 import { getErrorMessage } from '@side-quest/core/utils'
+import { emitCliEvent } from '../events/emit.js'
 import { getGitRoot } from '../git/git-root.js'
 import { loadOrDetectConfig, writeConfig } from './config.js'
 import { createWorktree } from './create.js'
@@ -28,10 +31,18 @@ async function main(): Promise<void> {
 		process.argv.slice(2),
 	)
 
+	// Handle the events top-level command
+	if (command === 'events') {
+		const gitRoot = await getGitRoot(process.cwd())
+		if (!gitRoot) {
+			fail('Not in a git repository')
+		}
+		await handleEventsCommand(subcommand || '', positional, flags, gitRoot)
+		return
+	}
+
 	if (command !== 'worktree') {
-		fail(
-			'Usage: side-quest-git worktree <create|list|delete|check|init> [args]',
-		)
+		fail('Usage: side-quest-git <worktree|events> <command> [args]')
 	}
 
 	const worktreeCommand = subcommand || ''
@@ -47,15 +58,22 @@ async function main(): Promise<void> {
 			const branchName = args[0]
 			if (!branchName) {
 				fail(
-					'Usage: side-quest-git worktree create <branch-name> [--no-install] [--no-fetch]',
+					'Usage: side-quest-git worktree create <branch-name> [--no-install] [--no-fetch] [--no-attach]',
 				)
 			}
 			const noInstall = flags['no-install'] === true
 			const noFetch = flags['no-fetch'] === true
+			const noAttach = flags['no-attach'] === true
 			const result = await createWorktree(gitRoot, branchName, {
 				noInstall,
 				noFetch,
+				attach: !noAttach,
 			})
+			void emitCliEvent(
+				result.attached ? 'worktree.attached' : 'worktree.created',
+				result,
+				{ repo: path.basename(gitRoot), gitRoot, source: 'cli' },
+			)
 			output(result)
 			break
 		}
@@ -63,10 +81,18 @@ async function main(): Promise<void> {
 		case 'list': {
 			const worktrees = await listWorktrees(gitRoot)
 			const showAll = flags.all === true
+			const includeOrphans = flags['include-orphans'] === true
 			const filtered = showAll
 				? worktrees
 				: worktrees.filter((worktree) => !worktree.isMain)
-			output(filtered)
+
+			if (includeOrphans) {
+				const { listOrphanBranches } = await import('./orphans.js')
+				const orphans = await listOrphanBranches(gitRoot)
+				output({ worktrees: filtered, orphans })
+			} else {
+				output(filtered)
+			}
 			break
 		}
 
@@ -83,6 +109,11 @@ async function main(): Promise<void> {
 			const result = await deleteWorktree(gitRoot, branchName, {
 				force,
 				deleteBranch,
+			})
+			void emitCliEvent('worktree.deleted', result, {
+				repo: path.basename(gitRoot),
+				gitRoot,
+				source: 'cli',
 			})
 			output(result)
 			break
@@ -115,9 +146,200 @@ async function main(): Promise<void> {
 			break
 		}
 
+		case 'install': {
+			const targetPath = args[0]
+			if (!targetPath) {
+				fail('Usage: side-quest-git worktree install <path> [--force]')
+			}
+			const force = flags.force === true
+			const { runInstall } = await import('./install.js')
+			const result = await runInstall(
+				path.isAbsolute(targetPath) ? targetPath : path.resolve(targetPath),
+				{ force },
+			)
+			void emitCliEvent('worktree.installed', result, {
+				repo: path.basename(gitRoot),
+				gitRoot,
+				source: 'cli',
+			})
+			output(result)
+			break
+		}
+
+		case 'sync': {
+			const branchOrAll = args[0]
+			const dryRun = flags['dry-run'] === true
+			const all = flags.all === true || branchOrAll === '--all'
+
+			if (all) {
+				const { syncAllWorktrees } = await import('./sync.js')
+				const results = await syncAllWorktrees(gitRoot, { dryRun })
+				void emitCliEvent('worktree.synced', results, {
+					repo: path.basename(gitRoot),
+					gitRoot,
+					source: 'cli',
+				})
+				output(results)
+			} else {
+				if (!branchOrAll) {
+					fail(
+						'Usage: side-quest-git worktree sync <branch> [--dry-run] or worktree sync --all',
+					)
+				}
+				const { syncWorktree } = await import('./sync.js')
+				const result = await syncWorktree(gitRoot, branchOrAll, {
+					dryRun,
+				})
+				void emitCliEvent('worktree.synced', result, {
+					repo: path.basename(gitRoot),
+					gitRoot,
+					source: 'cli',
+				})
+				output(result)
+			}
+			break
+		}
+
+		case 'status': {
+			const prFlag = flags.pr === true
+			const watchFlag = flags.watch === true
+
+			if (watchFlag) {
+				const intervalRaw = flags.interval
+				const interval =
+					typeof intervalRaw === 'string'
+						? Number.parseInt(intervalRaw, 10) * 1000
+						: undefined
+				const { watchWorktreeStatus } = await import('./watch.js')
+				await watchWorktreeStatus(gitRoot, {
+					interval,
+					includePr: prFlag,
+				})
+			} else {
+				const { getWorktreeStatus } = await import('./status.js')
+				const statuses = await getWorktreeStatus(gitRoot, {
+					includePr: prFlag,
+				})
+				output(statuses)
+			}
+			break
+		}
+
+		case 'orphans': {
+			const { listOrphanBranches } = await import('./orphans.js')
+			const orphans = await listOrphanBranches(gitRoot)
+			output(orphans)
+			break
+		}
+
+		case 'clean': {
+			const dryRun = flags['dry-run'] === true
+			const force = flags.force === true
+			const deleteBranches = flags['delete-branches'] === true
+			const includeOrphans = flags['include-orphans'] === true
+
+			if (force && !dryRun) {
+				console.error(
+					JSON.stringify({
+						warning:
+							'Force mode: will delete dirty and unmerged worktrees (except main)',
+					}),
+				)
+			}
+
+			const { cleanWorktrees } = await import('./clean.js')
+			const result = await cleanWorktrees(gitRoot, {
+				force,
+				dryRun,
+				deleteBranches,
+				includeOrphans,
+			})
+			void emitCliEvent('worktree.cleaned', result, {
+				repo: path.basename(gitRoot),
+				gitRoot,
+				source: 'cli',
+			})
+			output(result)
+			break
+		}
+
 		default:
 			fail(
-				`Unknown worktree command: ${worktreeCommand || '(none)'}. Available: create, list, delete, check, init`,
+				`Unknown worktree command: ${worktreeCommand || '(none)'}. Available: create, list, delete, check, init, install, sync, status, orphans, clean`,
+			)
+	}
+}
+
+/**
+ * Handle the `events` top-level command.
+ *
+ * Why: The event bus server needs CLI subcommands for starting
+ * the server and tailing the event stream in real-time.
+ *
+ * Subcommands:
+ *   start - Start the event bus server (foreground)
+ *   tail  - Connect to a running server and stream events
+ */
+async function handleEventsCommand(
+	eventsSubcommand: string,
+	_args: string[],
+	flags: Record<string, string | boolean | (string | boolean)[]>,
+	gitRoot: string,
+): Promise<void> {
+	const repoName = path.basename(gitRoot)
+
+	switch (eventsSubcommand) {
+		case 'start': {
+			const portRaw = flags.port
+			const port =
+				typeof portRaw === 'string' ? Number.parseInt(portRaw, 10) : 7483
+			const { startEventServer } = await import('../events/server.js')
+			const server = startEventServer({ port, repoName, gitRoot })
+			output({ status: 'started', port: server.port, pid: process.pid })
+			// Keep the process alive until interrupted
+			process.on('SIGINT', () => {
+				server.stop()
+				process.exit(0)
+			})
+			process.on('SIGTERM', () => {
+				server.stop()
+				process.exit(0)
+			})
+			// Block indefinitely
+			await new Promise(() => {})
+			break
+		}
+
+		case 'tail': {
+			const typeRaw = flags.type
+			const typeFilter = typeof typeRaw === 'string' ? typeRaw : undefined
+			const { readEventServerPort } = await import('../events/server.js')
+			const port = readEventServerPort(repoName)
+			if (!port) {
+				fail(
+					`No running event server found for repo "${repoName}". Run: side-quest-git events start`,
+				)
+			}
+			const { connectEventClient } = await import('../events/client.js')
+			connectEventClient({
+				port,
+				typeFilter,
+				onEvent: (event) => {
+					console.log(JSON.stringify(event))
+				},
+				onError: (error) => {
+					console.error(JSON.stringify({ error: error.message }))
+				},
+			})
+			// Keep the process alive
+			process.on('SIGINT', () => process.exit(0))
+			await new Promise(() => {})
+			break
+		}
+
+		default:
+			fail(
+				`Unknown events command: ${eventsSubcommand || '(none)'}. Available: start, tail`,
 			)
 	}
 }
