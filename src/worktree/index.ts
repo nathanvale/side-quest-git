@@ -2,6 +2,7 @@
  * Worktree module exports.
  */
 
+export { type CleanOptions, cleanWorktrees } from './clean.js'
 export {
 	autoDetectConfig,
 	CONFIG_FILENAME,
@@ -17,11 +18,33 @@ export {
 	type DeleteCheck,
 	deleteWorktree,
 } from './delete.js'
-export { detectInstallCommand } from './detect-pm.js'
+export {
+	detectInstallCommand,
+	detectLockfile,
+	detectPackageManager,
+} from './detect-pm.js'
+export { runInstall, shouldRunInstall } from './install.js'
 export { listWorktrees } from './list.js'
+export { listOrphanBranches } from './orphans.js'
+export type { StatusOptions } from './status.js'
+export { getWorktreeStatus } from './status.js'
+export { syncAllWorktrees, syncWorktree } from './sync.js'
 export type {
+	CleanedWorktree,
+	CleanResult,
 	CreateResult,
 	DeleteResult,
+	InstallResult,
+	OrphanBranch,
+	OrphanStatus,
+	PullRequestInfo,
+	SkippedWorktree,
+	SkipReason,
+	SyncedFile,
+	SyncResult,
 	WorktreeConfig,
 	WorktreeInfo,
+	WorktreeStatus,
 } from './types.js'
+export type { WatchOptions } from './watch.js'
+export { watchWorktreeStatus } from './watch.js'

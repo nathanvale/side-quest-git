@@ -174,4 +174,16 @@ describe('worktree CLI', () => {
 
 		expect(result.exitCode).not.toBe(0)
 	})
+
+	test('status --watch rejects invalid interval values', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'status', '--watch', '--interval', 'abc'],
+			{
+				cwd: tmpDir,
+			},
+		)
+
+		expect(result.exitCode).not.toBe(0)
+		expect(result.stderr).toContain('Invalid --interval value')
+	})
 })

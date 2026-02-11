@@ -19,7 +19,7 @@ import { validateShellCommand } from './validate.js'
 export async function createWorktree(
 	gitRoot: string,
 	branchName: string,
-	options: { noInstall?: boolean; noFetch?: boolean } = {},
+	options: { noInstall?: boolean; noFetch?: boolean; attach?: boolean } = {},
 ): Promise<CreateResult> {
 	const { config, autoDetected } = loadOrDetectConfig(gitRoot)
 
@@ -27,7 +27,34 @@ export async function createWorktree(
 	const worktreePath = path.join(gitRoot, config.directory, sanitizedBranch)
 
 	if (pathExistsSync(worktreePath)) {
-		throw new Error(`Worktree already exists at ${worktreePath}`)
+		if (options.attach === false) {
+			throw new Error(`Worktree already exists at ${worktreePath}`)
+		}
+		const existingBranch = await getCheckedOutBranch(worktreePath)
+		if (!existingBranch) {
+			throw new Error(
+				`Path exists but is not a valid git worktree: ${worktreePath}`,
+			)
+		}
+		if (existingBranch !== branchName) {
+			throw new Error(
+				`Refusing to attach: "${worktreePath}" is checked out on "${existingBranch}", not "${branchName}"`,
+			)
+		}
+		// Attach-to-existing: sync files instead of creating
+		const { syncWorktree } = await import('./sync.js')
+		const syncResult = await syncWorktree(gitRoot, branchName, {
+			dryRun: false,
+		})
+		return {
+			branch: branchName,
+			path: worktreePath,
+			filesCopied: syncResult.filesCopied,
+			postCreateOutput: null,
+			configAutoDetected: autoDetected,
+			attached: true,
+			syncResult,
+		}
 	}
 
 	if (!options.noFetch) {
@@ -88,7 +115,24 @@ export async function createWorktree(
 		filesCopied,
 		postCreateOutput,
 		configAutoDetected: autoDetected,
+		attached: false,
 	}
+}
+
+async function getCheckedOutBranch(
+	worktreePath: string,
+): Promise<string | null> {
+	const result = await spawnAndCollect(
+		['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+		{
+			cwd: worktreePath,
+		},
+	)
+	if (result.exitCode !== 0) {
+		return null
+	}
+	const branch = result.stdout.trim()
+	return branch.length > 0 ? branch : null
 }
 
 async function checkBranchExists(
