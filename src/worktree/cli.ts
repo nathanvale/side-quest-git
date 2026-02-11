@@ -288,9 +288,7 @@ async function handleEventsCommand(
 
 	switch (eventsSubcommand) {
 		case 'start': {
-			const portRaw = flags.port
-			const port =
-				typeof portRaw === 'string' ? Number.parseInt(portRaw, 10) : 7483
+			const port = parsePort(flags.port)
 			const { startEventServer } = await import('../events/server.js')
 			const server = startEventServer({
 				port,
@@ -345,6 +343,25 @@ async function handleEventsCommand(
 				`Unknown events command: ${eventsSubcommand || '(none)'}. Available: start, tail`,
 			)
 	}
+}
+
+/**
+ * Parse and validate the `--port` flag for the event server.
+ *
+ * Why: NaN or out-of-range values would silently break Bun.serve().
+ */
+function parsePort(
+	portFlag: string | boolean | (string | boolean)[] | undefined,
+): number {
+	if (portFlag === undefined) return 7483
+	if (typeof portFlag !== 'string') {
+		fail('Invalid --port value: expected a number between 1 and 65535')
+	}
+	const port = Number.parseInt(portFlag, 10)
+	if (!Number.isFinite(port) || port < 1 || port > 65535) {
+		fail('Invalid --port value: expected a number between 1 and 65535')
+	}
+	return port
 }
 
 /**

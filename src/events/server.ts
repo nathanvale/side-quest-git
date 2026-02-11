@@ -116,21 +116,23 @@ function removePidFiles(cacheDir: string): void {
  */
 export function readEventServerPort(cacheKey: string): number | null {
 	const cacheDir = getEventCacheDir(cacheKey)
-	const portFile = path.join(cacheDir, 'events.port')
 	const pidFile = path.join(cacheDir, 'events.pid')
+	const portFile = path.join(cacheDir, 'events.port')
 
-	if (!pathExistsSync(portFile) || !pathExistsSync(pidFile)) {
+	try {
+		const pid = Number.parseInt(readTextFileSync(pidFile), 10)
+		const port = Number.parseInt(readTextFileSync(portFile), 10)
+
+		if (!isProcessRunning(pid)) {
+			removePidFiles(cacheDir)
+			return null
+		}
+
+		return port
+	} catch {
+		// Files missing or unreadable (race with shutdown)
 		return null
 	}
-
-	const pid = Number.parseInt(readTextFileSync(pidFile), 10)
-	if (!isProcessRunning(pid)) {
-		// Stale PID file - clean up
-		removePidFiles(cacheDir)
-		return null
-	}
-
-	return Number.parseInt(readTextFileSync(portFile), 10)
 }
 
 /**
@@ -162,12 +164,7 @@ export function startEventServer(options: ServerOptions): EventServer {
 	// Check for stale PID
 	const existingPort = readEventServerPort(cacheKey)
 	if (existingPort !== null) {
-		// Server already running
-		const pidFile = path.join(cacheDir, 'events.pid')
-		const pid = Number.parseInt(readTextFileSync(pidFile), 10)
-		throw new Error(
-			`Event server already running on port ${existingPort} (PID ${pid})`,
-		)
+		throw new Error(`Event server already running on port ${existingPort}`)
 	}
 
 	const server: Server<WsClientData> = Bun.serve<WsClientData>({

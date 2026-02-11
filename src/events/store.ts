@@ -72,7 +72,8 @@ export class EventStore {
 			const since = filter.since
 			events = events.filter((e) => e.timestamp > since)
 		}
-		if (filter?.limit) {
+		if (filter?.limit !== undefined) {
+			if (filter.limit <= 0) return []
 			events = events.slice(-filter.limit)
 		}
 		return events
@@ -80,6 +81,7 @@ export class EventStore {
 
 	/** Get last N events from the buffer. */
 	last(n: number): EventEnvelope[] {
+		if (n <= 0) return []
 		return this.toArray().slice(-n)
 	}
 

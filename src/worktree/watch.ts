@@ -47,17 +47,19 @@ export async function watchWorktreeStatus(
 	const { interval = 5000, includePr = false } = options
 	const { getWorktreeStatus } = await import('./status.js')
 
-	let running = true
-
 	process.on('SIGINT', () => {
-		running = false
 		process.stdout.write('\n')
 		process.exit(0)
 	})
 
-	while (running) {
-		const statuses = await getWorktreeStatus(gitRoot, { includePr })
-		renderTable(statuses)
+	while (true) {
+		try {
+			const statuses = await getWorktreeStatus(gitRoot, { includePr })
+			renderTable(statuses, interval)
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err)
+			renderTable([], interval, msg)
+		}
 		await new Promise((resolve) => setTimeout(resolve, interval))
 	}
 }
@@ -152,7 +154,11 @@ const COLUMNS: readonly Column[] = [
  * Uses ANSI-aware string width calculations for proper alignment
  * even with color codes embedded in cell values.
  */
-function renderTable(statuses: readonly WorktreeStatus[]): void {
+function renderTable(
+	statuses: readonly WorktreeStatus[],
+	intervalMs: number,
+	error?: string,
+): void {
 	// Build rows as string arrays (one per worktree)
 	const rows: string[][] = statuses.map((s) => [
 		formatBranch(s.branch, s.isMain),
@@ -193,16 +199,17 @@ function renderTable(statuses: readonly WorktreeStatus[]): void {
 	)
 
 	// Compose full output
+	const intervalLabel = `${Math.round(intervalMs / 1000)}s`
 	const lines: string[] = [
 		bold('Worktree Status'),
-		dim(`Refreshing every ${dim('...')} -- press Ctrl+C to exit`),
+		dim(`Refreshing every ${intervalLabel} -- press Ctrl+C to exit`),
 		'',
-		headerLine,
-		separatorLine,
-		...dataLines,
-		'',
-		dim(`Last updated: ${new Date().toLocaleTimeString()}`),
 	]
+	if (error) {
+		lines.push(color('red', `Error: ${error}`), '')
+	}
+	lines.push(headerLine, separatorLine, ...dataLines, '')
+	lines.push(dim(`Last updated: ${new Date().toLocaleTimeString()}`))
 
 	process.stdout.write(`${CLEAR_SCREEN + lines.join('\n')}\n`)
 }

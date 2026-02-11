@@ -77,10 +77,10 @@ export async function runInstall(
 
 	if (!pm || !installCmd) {
 		return {
-			status: 'no-package-json',
+			status: 'failed',
 			packageManager: null,
 			durationMs: null,
-			error: 'No lockfile found',
+			error: 'No lockfile found -- cannot determine package manager',
 		}
 	}
 

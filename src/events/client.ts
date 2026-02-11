@@ -63,7 +63,9 @@ export function connectEventClient(
 	function connect(): void {
 		if (closed) return
 
-		const filterParam = typeFilter ? `?type=${typeFilter}` : ''
+		const filterParam = typeFilter
+			? `?type=${encodeURIComponent(typeFilter)}`
+			: ''
 		const url = `ws://${host}:${port}/ws${filterParam}`
 
 		ws = new WebSocket(url)
