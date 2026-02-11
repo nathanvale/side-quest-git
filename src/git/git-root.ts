@@ -1,4 +1,4 @@
-import { getMainWorktreeRoot } from '@side-quest/core/git'
+import { resolve } from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 
 /**
@@ -8,13 +8,24 @@ import { spawnAndCollect } from '@side-quest/core/spawn'
  * not the main repo. This function always returns the main worktree root
  * where the actual `.git` directory (not file) lives.
  *
- * Delegates to `getMainWorktreeRoot()` from `@side-quest/core/git`.
+ * Uses `git rev-parse --git-common-dir` which resolves to the shared
+ * `.git` directory for both main and linked worktrees.
  *
  * @param cwd - Directory to resolve from
  * @returns Absolute path to the main worktree root, or null if not in a git repo
  */
 export async function getMainRoot(cwd: string): Promise<string | null> {
-	return getMainWorktreeRoot(cwd)
+	const { stdout, exitCode } = await spawnAndCollect(
+		['git', 'rev-parse', '--git-common-dir'],
+		{ cwd },
+	)
+
+	if (exitCode !== 0) return null
+
+	const commonDir = stdout.trim()
+	if (!commonDir) return null
+
+	return resolve(cwd, commonDir, '..')
 }
 
 /**
