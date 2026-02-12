@@ -59,16 +59,18 @@ async function main(): Promise<void> {
 			const branchName = args[0]
 			if (!branchName) {
 				fail(
-					'Usage: side-quest-git worktree create <branch-name> [--no-install] [--no-fetch] [--no-attach]',
+					'Usage: side-quest-git worktree create <branch-name> [--no-install] [--no-fetch] [--no-attach] [--base <ref>]',
 				)
 			}
 			const noInstall = flags['no-install'] === true
 			const noFetch = flags['no-fetch'] === true
 			const noAttach = flags['no-attach'] === true
+			const base = typeof flags.base === 'string' ? flags.base : undefined
 			const result = await createWorktree(gitRoot, branchName, {
 				noInstall,
 				noFetch,
 				attach: !noAttach,
+				base,
 			})
 			void emitCliEvent(
 				result.attached ? 'worktree.attached' : 'worktree.created',

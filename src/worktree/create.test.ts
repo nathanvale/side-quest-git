@@ -301,4 +301,145 @@ describe('createWorktree', () => {
 			).rejects.toThrow('Refusing to attach')
 		})
 	})
+
+	describe('--base flag', () => {
+		test('creates worktree from explicit base branch', async () => {
+			// Create a feature branch with a unique file
+			await spawnAndCollect(['git', 'checkout', '-b', 'feat/base-branch'], {
+				cwd: gitRoot,
+			})
+			fs.writeFileSync(path.join(gitRoot, 'base-file.txt'), 'base content')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+			await spawnAndCollect(['git', 'commit', '-m', 'add base file'], {
+				cwd: gitRoot,
+			})
+			await spawnAndCollect(['git', 'checkout', 'main'], { cwd: gitRoot })
+
+			// Create worktree using explicit base
+			const result = await createWorktree(gitRoot, 'feat/from-base', {
+				noInstall: true,
+				noFetch: true,
+				base: 'feat/base-branch',
+			})
+
+			// Verify the worktree contains the base file
+			expect(fs.existsSync(path.join(result.path, 'base-file.txt'))).toBe(true)
+			expect(fs.readFileSync(path.join(result.path, 'base-file.txt'), 'utf-8')).toBe('base content')
+		})
+
+		test('base flag works with commit hash', async () => {
+			// Create a commit and get its hash
+			fs.writeFileSync(path.join(gitRoot, 'hash-test.txt'), 'hash content')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+			await spawnAndCollect(['git', 'commit', '-m', 'commit for hash test'], {
+				cwd: gitRoot,
+			})
+			const hashResult = await spawnAndCollect(['git', 'rev-parse', 'HEAD'], {
+				cwd: gitRoot,
+			})
+			const commitHash = hashResult.stdout.trim()
+
+			// Create another commit so HEAD moves forward
+			fs.writeFileSync(path.join(gitRoot, 'newer.txt'), 'newer')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+			await spawnAndCollect(['git', 'commit', '-m', 'newer commit'], {
+				cwd: gitRoot,
+			})
+
+			// Create worktree based on the older commit hash
+			const result = await createWorktree(gitRoot, 'feat/from-hash', {
+				noInstall: true,
+				noFetch: true,
+				base: commitHash,
+			})
+
+			// Should have hash-test.txt but NOT newer.txt
+			expect(fs.existsSync(path.join(result.path, 'hash-test.txt'))).toBe(true)
+			expect(fs.existsSync(path.join(result.path, 'newer.txt'))).toBe(false)
+		})
+
+		test('throws clear error when base ref does not exist', async () => {
+			await expect(
+				createWorktree(gitRoot, 'feat/bad-base', {
+					noInstall: true,
+					noFetch: true,
+					base: 'nonexistent-branch',
+				}),
+			).rejects.toThrow(
+				"Base ref 'nonexistent-branch' does not exist. Use a valid branch, tag, or commit.",
+			)
+		})
+
+		test('base flag skips auto-detection of remote default branch', async () => {
+			// Create a custom branch to use as base
+			await spawnAndCollect(['git', 'checkout', '-b', 'custom-base'], {
+				cwd: gitRoot,
+			})
+			fs.writeFileSync(path.join(gitRoot, 'custom.txt'), 'custom')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+			await spawnAndCollect(['git', 'commit', '-m', 'custom base'], {
+				cwd: gitRoot,
+			})
+			await spawnAndCollect(['git', 'checkout', 'main'], { cwd: gitRoot })
+
+			// Even without a remote, base should work (no auto-detection needed)
+			const result = await createWorktree(gitRoot, 'feat/skip-autodetect', {
+				noInstall: true,
+				noFetch: true,
+				base: 'custom-base',
+			})
+
+			expect(fs.existsSync(path.join(result.path, 'custom.txt'))).toBe(true)
+		})
+
+		test('base flag respects --no-fetch behavior', async () => {
+			// Create a local branch to use as base
+			await spawnAndCollect(['git', 'checkout', '-b', 'local-base'], {
+				cwd: gitRoot,
+			})
+			fs.writeFileSync(path.join(gitRoot, 'local.txt'), 'local')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+			await spawnAndCollect(['git', 'commit', '-m', 'local base'], {
+				cwd: gitRoot,
+			})
+			await spawnAndCollect(['git', 'checkout', 'main'], { cwd: gitRoot })
+
+			// With --no-fetch, should still work with local ref
+			const result = await createWorktree(gitRoot, 'feat/no-fetch-base', {
+				noInstall: true,
+				noFetch: true,
+				base: 'local-base',
+			})
+
+			expect(fs.existsSync(path.join(result.path, 'local.txt'))).toBe(true)
+		})
+
+		test('base flag works with tags', async () => {
+			// Create a tag
+			fs.writeFileSync(path.join(gitRoot, 'tagged.txt'), 'tagged content')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+			await spawnAndCollect(['git', 'commit', '-m', 'tagged commit'], {
+				cwd: gitRoot,
+			})
+			await spawnAndCollect(['git', 'tag', 'v1.0.0'], { cwd: gitRoot })
+
+			// Create another commit so HEAD moves forward
+			fs.writeFileSync(path.join(gitRoot, 'after-tag.txt'), 'after tag')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+			await spawnAndCollect(['git', 'commit', '-m', 'after tag'], {
+				cwd: gitRoot,
+			})
+
+			// Create worktree based on the tag
+			const result = await createWorktree(gitRoot, 'feat/from-tag', {
+				noInstall: true,
+				noFetch: true,
+				base: 'v1.0.0',
+			})
+
+			// Should have tagged.txt but NOT after-tag.txt
+			expect(fs.existsSync(path.join(result.path, 'tagged.txt'))).toBe(true)
+			expect(fs.existsSync(path.join(result.path, 'after-tag.txt'))).toBe(false)
+		})
+	})
 })

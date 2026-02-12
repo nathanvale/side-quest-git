@@ -36,6 +36,10 @@ export interface WorktreeInfo {
 	readonly merged: boolean
 	/** Whether this is the main (bare) worktree. */
 	readonly isMain: boolean
+	/** Number of commits ahead of the main branch. */
+	readonly commitsAhead?: number
+	/** Status summary string. */
+	readonly status?: string
 }
 
 /** Output from `worktree create`. */

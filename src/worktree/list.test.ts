@@ -106,4 +106,108 @@ describe('listWorktrees', () => {
 		const worktrees = await listWorktrees(gitRoot)
 		expect(worktrees[0]!.head).toHaveLength(7)
 	})
+
+	test('main worktree has no commitsAhead or status', async () => {
+		const worktrees = await listWorktrees(gitRoot)
+		const main = worktrees.find((w) => w.isMain)
+
+		expect(main).toBeDefined()
+		expect(main!.commitsAhead).toBeUndefined()
+		expect(main!.status).toBeUndefined()
+	})
+
+	test('clean feature branch shows pristine status', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-pristine')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/pristine', wtPath], {
+			cwd: gitRoot,
+		})
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/pristine')
+
+		expect(feature).toBeDefined()
+		expect(feature!.commitsAhead).toBe(0)
+		expect(feature!.status).toBe('pristine')
+	})
+
+	test('dirty feature branch shows dirty status', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-dirty-status')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/dirty-status', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'dirty.txt'), 'uncommitted')
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/dirty-status')
+
+		expect(feature).toBeDefined()
+		expect(feature!.commitsAhead).toBe(0)
+		expect(feature!.status).toBe('dirty')
+	})
+
+	test('branch with commits ahead shows ahead count', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-ahead')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/ahead', wtPath], { cwd: gitRoot })
+		fs.writeFileSync(path.join(wtPath, 'file1.txt'), 'commit 1')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'commit 1'], {
+			cwd: wtPath,
+		})
+		fs.writeFileSync(path.join(wtPath, 'file2.txt'), 'commit 2')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'commit 2'], {
+			cwd: wtPath,
+		})
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/ahead')
+
+		expect(feature).toBeDefined()
+		expect(feature!.commitsAhead).toBe(2)
+		expect(feature!.status).toBe('2 ahead')
+	})
+
+	test('branch with commits ahead and dirty shows combined status', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-ahead-dirty')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/ahead-dirty', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'file1.txt'), 'commit 1')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'commit 1'], {
+			cwd: wtPath,
+		})
+		fs.writeFileSync(path.join(wtPath, 'dirty.txt'), 'uncommitted')
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/ahead-dirty')
+
+		expect(feature).toBeDefined()
+		expect(feature!.commitsAhead).toBe(1)
+		expect(feature!.status).toBe('1 ahead, dirty')
+	})
+
+	test('merged branch shows merged status', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-merged-status')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/merged-status', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'feature')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'add feature'], {
+			cwd: wtPath,
+		})
+		await spawnAndCollect(
+			['git', 'merge', '--no-ff', '-m', 'Merge feat/merged-status', 'feat/merged-status'],
+			{
+				cwd: gitRoot,
+			},
+		)
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/merged-status')
+
+		expect(feature).toBeDefined()
+		expect(feature!.status).toBe('merged')
+	})
 })

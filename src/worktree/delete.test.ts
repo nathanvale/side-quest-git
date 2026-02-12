@@ -90,6 +90,73 @@ describe('deleteWorktree', () => {
 			const check = await checkBeforeDelete(gitRoot, 'feat/merged')
 			expect(check.merged).toBe(true)
 		})
+
+		test('reports commitsAhead for clean branch', async () => {
+			const wtPath = await createTestWorktree('feat/ahead')
+			fs.writeFileSync(path.join(wtPath, 'file1.txt'), 'commit 1')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'commit 1'], {
+				cwd: wtPath,
+			})
+			fs.writeFileSync(path.join(wtPath, 'file2.txt'), 'commit 2')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'commit 2'], {
+				cwd: wtPath,
+			})
+
+			const check = await checkBeforeDelete(gitRoot, 'feat/ahead')
+			expect(check.commitsAhead).toBe(2)
+			expect(check.status).toBe('2 ahead')
+		})
+
+		test('reports pristine status for clean branch with no commits', async () => {
+			await createTestWorktree('feat/pristine')
+
+			const check = await checkBeforeDelete(gitRoot, 'feat/pristine')
+			expect(check.commitsAhead).toBe(0)
+			expect(check.status).toBe('pristine')
+		})
+
+		test('reports dirty status for dirty branch with no commits ahead', async () => {
+			const wtPath = await createTestWorktree('feat/dirty-only')
+			fs.writeFileSync(path.join(wtPath, 'dirty.txt'), 'uncommitted')
+
+			const check = await checkBeforeDelete(gitRoot, 'feat/dirty-only')
+			expect(check.commitsAhead).toBe(0)
+			expect(check.status).toBe('dirty')
+		})
+
+		test('reports combined status for dirty branch with commits ahead', async () => {
+			const wtPath = await createTestWorktree('feat/ahead-dirty')
+			fs.writeFileSync(path.join(wtPath, 'file1.txt'), 'commit 1')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'commit 1'], {
+				cwd: wtPath,
+			})
+			fs.writeFileSync(path.join(wtPath, 'dirty.txt'), 'uncommitted')
+
+			const check = await checkBeforeDelete(gitRoot, 'feat/ahead-dirty')
+			expect(check.commitsAhead).toBe(1)
+			expect(check.status).toBe('1 ahead, dirty')
+		})
+
+		test('reports merged status even with commits ahead', async () => {
+			const wtPath = await createTestWorktree('feat/merged-status')
+			fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'done')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'feature'], {
+				cwd: wtPath,
+			})
+			await spawnAndCollect(
+				['git', 'merge', '--no-ff', '-m', 'Merge feat/merged-status', 'feat/merged-status'],
+				{
+					cwd: gitRoot,
+				},
+			)
+
+			const check = await checkBeforeDelete(gitRoot, 'feat/merged-status')
+			expect(check.status).toBe('merged')
+		})
 	})
 
 	describe('deleteWorktree', () => {

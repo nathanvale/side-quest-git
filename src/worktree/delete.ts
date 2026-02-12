@@ -15,6 +15,8 @@ export interface DeleteCheck {
 	readonly dirty: boolean
 	readonly merged: boolean
 	readonly exists: boolean
+	readonly commitsAhead?: number
+	readonly status?: string
 }
 
 export async function checkBeforeDelete(
@@ -56,7 +58,67 @@ export async function checkBeforeDelete(
 	)
 	const merged = mergeResult.exitCode === 0
 
-	return { path: worktreePath, branch: branchName, dirty, merged, exists }
+	// Compute commits ahead (lightweight)
+	let commitsAhead: number | undefined
+	let status: string | undefined
+
+	try {
+		const countResult = await spawnAndCollect(
+			['git', 'rev-list', '--count', `${mainBranch}..${branchName}`],
+			{ cwd: worktreePath },
+		)
+		if (countResult.exitCode === 0) {
+			commitsAhead = Number.parseInt(countResult.stdout.trim(), 10)
+
+			// Compute status string
+			// To distinguish between "merged" and "pristine", check if main has moved forward
+			// If merged = true and main has commits this branch doesn't have, it's "merged"
+			// If merged = true and main is at the same point, it's "pristine"
+			if (merged && commitsAhead === 0) {
+				const behindResult = await spawnAndCollect(
+					['git', 'rev-list', '--count', `${branchName}..${mainBranch}`],
+					{ cwd: worktreePath },
+				)
+				const commitsBehind =
+					behindResult.exitCode === 0
+						? Number.parseInt(behindResult.stdout.trim(), 10)
+						: 0
+
+				if (commitsBehind > 0) {
+					// Main has moved forward, so this branch is behind (merged or just old)
+					status = 'merged'
+				} else if (dirty) {
+					// At same point as main, but has uncommitted changes
+					status = 'dirty'
+				} else {
+					// At same point as main, no changes - pristine
+					status = 'pristine'
+				}
+			} else if (commitsAhead > 0 && dirty) {
+				status = `${commitsAhead} ahead, dirty`
+			} else if (commitsAhead > 0) {
+				status = `${commitsAhead} ahead`
+			} else if (dirty) {
+				status = 'dirty'
+			} else {
+				status = 'pristine'
+			}
+		} else {
+			status = 'unknown'
+		}
+	} catch {
+		status = 'unknown'
+	}
+
+	return {
+		path: worktreePath,
+		branch: branchName,
+		dirty,
+		merged,
+		exists,
+		commitsAhead,
+		status,
+	}
 }
 
 export async function deleteWorktree(
