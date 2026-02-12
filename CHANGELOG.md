@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- [#9](https://github.com/nathanvale/side-quest-git/pull/9) [`2ff038b`](https://github.com/nathanvale/side-quest-git/commit/2ff038b44bc16f8e69cd88ee58edb0c6138aaae8) Thanks [@nathanvale](https://github.com/nathanvale)! - Add `--base` flag validation and improve worktree status reporting
+
+  - Validate `--base` flag input to prevent silent failures when provided without a ref
+  - Add `commitsAhead` and `status` fields to worktree info (`pristine`, `dirty`, `N ahead`, `merged`, `merged, dirty`)
+  - Surface dirty state on merged branches so safety checks stay accurate
+
 ## 0.1.0
 
 ### Minor Changes

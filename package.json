@@ -1,6 +1,6 @@
 {
 	"name": "@side-quest/git",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Git utilities and safety hooks for Claude Code",
 	"author": {
 		"name": "Nathan Vale",
