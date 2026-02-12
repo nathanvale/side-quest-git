@@ -19,7 +19,12 @@ import { validateShellCommand } from './validate.js'
 export async function createWorktree(
 	gitRoot: string,
 	branchName: string,
-	options: { noInstall?: boolean; noFetch?: boolean; attach?: boolean } = {},
+	options: {
+		noInstall?: boolean
+		noFetch?: boolean
+		attach?: boolean
+		base?: string
+	} = {},
 ): Promise<CreateResult> {
 	const { config, autoDetected } = loadOrDetectConfig(gitRoot)
 
@@ -78,6 +83,23 @@ export async function createWorktree(
 			branchName,
 			worktreePath,
 			`origin/${branchName}`,
+		]
+	} else if (options.base) {
+		// Use explicit base if provided
+		const baseValid = await checkRefExists(gitRoot, options.base)
+		if (!baseValid) {
+			throw new Error(
+				`Base ref '${options.base}' does not exist. Use a valid branch, tag, or commit.`,
+			)
+		}
+		addArgs = [
+			'git',
+			'worktree',
+			'add',
+			'-b',
+			branchName,
+			worktreePath,
+			options.base,
 		]
 	} else {
 		const defaultBase = await getRemoteDefaultBranch(gitRoot)
@@ -152,6 +174,14 @@ async function checkRemoteBranchExists(
 ): Promise<boolean> {
 	const result = await spawnAndCollect(
 		['git', 'show-ref', '--verify', `refs/remotes/origin/${branchName}`],
+		{ cwd: gitRoot },
+	)
+	return result.exitCode === 0
+}
+
+async function checkRefExists(gitRoot: string, ref: string): Promise<boolean> {
+	const result = await spawnAndCollect(
+		['git', 'rev-parse', '--verify', '--quiet', ref],
 		{ cwd: gitRoot },
 	)
 	return result.exitCode === 0

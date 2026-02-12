@@ -175,6 +175,18 @@ describe('worktree CLI', () => {
 		expect(result.exitCode).not.toBe(0)
 	})
 
+	test('create with bare --base: exits with error', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'create', 'feat/base-missing', '--base'],
+			{
+				cwd: tmpDir,
+			},
+		)
+
+		expect(result.exitCode).not.toBe(0)
+		expect(result.stderr).toContain('Invalid --base value')
+	})
+
 	test('status --watch rejects invalid interval values', async () => {
 		const result = await spawnAndCollect(
 			['bun', 'run', CLI_PATH, 'worktree', 'status', '--watch', '--interval', 'abc'],
