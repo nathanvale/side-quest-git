@@ -210,4 +210,39 @@ describe('listWorktrees', () => {
 		expect(feature).toBeDefined()
 		expect(feature!.status).toBe('merged')
 	})
+
+	test('merged dirty branch behind main shows merged, dirty status', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-merged-dirty-behind')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/merged-dirty-behind', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'feature')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'add feature'], {
+			cwd: wtPath,
+		})
+		await spawnAndCollect(
+			[
+				'git',
+				'merge',
+				'--no-ff',
+				'-m',
+				'Merge feat/merged-dirty-behind',
+				'feat/merged-dirty-behind',
+			],
+			{
+				cwd: gitRoot,
+			},
+		)
+		fs.writeFileSync(path.join(wtPath, 'dirty.txt'), 'uncommitted')
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/merged-dirty-behind')
+
+		expect(feature).toBeDefined()
+		expect(feature!.merged).toBe(true)
+		expect(feature!.dirty).toBe(true)
+		expect(feature!.commitsAhead).toBe(0)
+		expect(feature!.status).toBe('merged, dirty')
+	})
 })

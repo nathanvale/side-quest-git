@@ -65,7 +65,7 @@ async function main(): Promise<void> {
 			const noInstall = flags['no-install'] === true
 			const noFetch = flags['no-fetch'] === true
 			const noAttach = flags['no-attach'] === true
-			const base = typeof flags.base === 'string' ? flags.base : undefined
+			const base = parseBaseRef(flags.base)
 			const result = await createWorktree(gitRoot, branchName, {
 				noInstall,
 				noFetch,
@@ -364,6 +364,24 @@ function parsePort(
 		fail('Invalid --port value: expected a number between 1 and 65535')
 	}
 	return port
+}
+
+/**
+ * Parse and validate the `--base` flag used by `worktree create`.
+ *
+ * Why: A bare `--base` is parsed as `true` and would otherwise be silently
+ * ignored, causing branch creation from an unexpected default base.
+ */
+function parseBaseRef(
+	baseFlag: string | boolean | (string | boolean)[] | undefined,
+): string | undefined {
+	if (baseFlag === undefined) {
+		return undefined
+	}
+	if (typeof baseFlag !== 'string' || baseFlag.trim().length === 0) {
+		fail('Invalid --base value: expected a branch, tag, or commit ref')
+	}
+	return baseFlag
 }
 
 /**

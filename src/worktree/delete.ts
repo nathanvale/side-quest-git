@@ -85,8 +85,9 @@ export async function checkBeforeDelete(
 						: 0
 
 				if (commitsBehind > 0) {
-					// Main has moved forward, so this branch is behind (merged or just old)
-					status = 'merged'
+					// Main has moved forward, so this branch is behind (merged or just old).
+					// Keep dirty state visible so safety checks don't look clean.
+					status = dirty ? 'merged, dirty' : 'merged'
 				} else if (dirty) {
 					// At same point as main, but has uncommitted changes
 					status = 'dirty'

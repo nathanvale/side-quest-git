@@ -112,8 +112,9 @@ async function enrichWorktreeInfo(
 							: 0
 
 					if (commitsBehind > 0) {
-						// Main has moved forward, so this branch is behind (merged or just old)
-						status = 'merged'
+						// Main has moved forward, so this branch is behind (merged or just old).
+						// Keep dirty state visible so status summaries stay accurate.
+						status = dirty ? 'merged, dirty' : 'merged'
 					} else if (dirty) {
 						// At same point as main, but has uncommitted changes
 						status = 'dirty'

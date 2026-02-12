@@ -157,6 +157,34 @@ describe('deleteWorktree', () => {
 			const check = await checkBeforeDelete(gitRoot, 'feat/merged-status')
 			expect(check.status).toBe('merged')
 		})
+
+		test('reports merged, dirty when merged branch is behind main and dirty', async () => {
+			const wtPath = await createTestWorktree('feat/merged-dirty-behind')
+			fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'done')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'feature'], {
+				cwd: wtPath,
+			})
+			await spawnAndCollect(
+				[
+					'git',
+					'merge',
+					'--no-ff',
+					'-m',
+					'Merge feat/merged-dirty-behind',
+					'feat/merged-dirty-behind',
+				],
+				{ cwd: gitRoot },
+			)
+
+			fs.writeFileSync(path.join(wtPath, 'dirty.txt'), 'uncommitted')
+
+			const check = await checkBeforeDelete(gitRoot, 'feat/merged-dirty-behind')
+			expect(check.merged).toBe(true)
+			expect(check.dirty).toBe(true)
+			expect(check.commitsAhead).toBe(0)
+			expect(check.status).toBe('merged, dirty')
+		})
 	})
 
 	describe('deleteWorktree', () => {
