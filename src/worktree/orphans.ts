@@ -100,5 +100,13 @@ export async function listOrphanBranches(
 				detectionError: detection.detectionError,
 			}
 		},
+		onError: (branch, error) => ({
+			branch,
+			status: 'unknown' as OrphanStatus,
+			commitsAhead: -1,
+			merged: false,
+			mergeMethod: undefined,
+			detectionError: error instanceof Error ? error.message : String(error),
+		}),
 	})
 }
