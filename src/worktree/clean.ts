@@ -74,6 +74,7 @@ export async function cleanWorktrees(
 					branch: wt.branch,
 					path: wt.path,
 					reason: 'dirty',
+					mergeMethod: wt.mergeMethod,
 				})
 				continue
 			}
@@ -82,6 +83,7 @@ export async function cleanWorktrees(
 					branch: wt.branch,
 					path: wt.path,
 					reason: 'unmerged',
+					mergeMethod: wt.mergeMethod,
 				})
 				continue
 			}
@@ -92,6 +94,7 @@ export async function cleanWorktrees(
 				branch: wt.branch,
 				path: wt.path,
 				branchDeleted: deleteBranches,
+				mergeMethod: wt.mergeMethod,
 			})
 			continue
 		}
@@ -110,6 +113,7 @@ export async function cleanWorktrees(
 					path: wt.path,
 					reason: 'delete-failed',
 					error: removeResult.stderr.trim(),
+					mergeMethod: wt.mergeMethod,
 				})
 				continue
 			}
@@ -128,6 +132,7 @@ export async function cleanWorktrees(
 				branch: wt.branch,
 				path: wt.path,
 				branchDeleted,
+				mergeMethod: wt.mergeMethod,
 			})
 		} catch (err) {
 			skipped.push({
@@ -135,6 +140,7 @@ export async function cleanWorktrees(
 				path: wt.path,
 				reason: 'delete-failed',
 				error: err instanceof Error ? err.message : String(err),
+				mergeMethod: wt.mergeMethod,
 			})
 		}
 	}

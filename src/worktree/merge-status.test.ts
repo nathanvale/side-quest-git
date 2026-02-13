@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
-import { detectMergeStatus } from './merge-status.js'
+import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 
 let dirs: string[] = []
 
@@ -464,5 +464,96 @@ describe('detectMergeStatus - Invariants', () => {
 		const result2 = await detectMergeStatus(gitRoot, 'feature')
 
 		expect(result1).toEqual(result2)
+	})
+})
+
+describe('detectMergeStatus - Shallow clone guard', () => {
+	test('isShallow true returns detectionError and skips all layers', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+		})
+
+		expect(result.merged).toBe(false)
+		expect(result.commitsAhead).toBe(0)
+		expect(result.commitsBehind).toBe(0)
+		expect(result.detectionError).toContain('shallow clone')
+		expect(result.mergeMethod).toBeUndefined()
+	})
+
+	test('isShallow null sets warning but proceeds with detection', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: null,
+		})
+
+		// Detection should still work (fail-open guard)
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		// But warning should be set
+		expect(result.detectionError).toContain('shallow check failed')
+	})
+
+	test('isShallow false proceeds normally', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: false,
+		})
+
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.detectionError).toBeUndefined()
+	})
+
+	test('isShallow undefined proceeds normally', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: undefined,
+		})
+
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.detectionError).toBeUndefined()
+	})
+
+	test('kill switch skips shallow guard', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		process.env.SIDE_QUEST_NO_SQUASH_DETECTION = '1'
+
+		// Even with isShallow: true, should not return shallow error
+		// Instead should return normal result with squash detection disabled
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+		})
+
+		expect(result.detectionError).toBeUndefined()
+		// Squash detection is disabled, so unmerged branch stays unmerged
+		expect(result.merged).toBe(false)
+	})
+})
+
+describe('checkIsShallow', () => {
+	test('returns false for normal repo', async () => {
+		const gitRoot = await initRepo()
+		const result = await checkIsShallow(gitRoot)
+		expect(result).toBe(false)
 	})
 })

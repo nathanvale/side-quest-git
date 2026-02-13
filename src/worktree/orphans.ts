@@ -7,10 +7,11 @@
  * @module worktree/orphans
  */
 
+import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
 import { listWorktrees } from './list.js'
-import { detectMergeStatus } from './merge-status.js'
+import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import type { OrphanBranch, OrphanStatus } from './types.js'
 
 /** Default branches that should never be considered orphans. */
@@ -54,33 +55,58 @@ export async function listOrphanBranches(
 	// Get main branch for merge comparison
 	const mainBranch = await getMainBranch(gitRoot)
 
-	// Find orphans: branches without worktrees, not protected
-	const orphans: OrphanBranch[] = []
-	for (const branch of allBranches) {
-		if (protectedSet.has(branch)) continue
-		if (worktreeBranches.has(branch)) continue
+	// Filter to orphan candidates (no worktree, not protected)
+	const orphanCandidates = allBranches.filter(
+		(branch) => !protectedSet.has(branch) && !worktreeBranches.has(branch),
+	)
 
-		const detection = await detectMergeStatus(gitRoot, branch, mainBranch)
+	const isShallow = await checkIsShallow(gitRoot)
 
-		let status: OrphanStatus
-		let commitsAhead: number
+	return processInParallelChunks({
+		items: orphanCandidates,
+		chunkSize: 4,
+		processor: async (branch) => {
+			const detection = await detectMergeStatus(gitRoot, branch, mainBranch, {
+				isShallow,
+			})
 
-		if (detection.merged) {
-			status = 'merged'
-			commitsAhead = 0
-		} else if (detection.commitsAhead > 0) {
-			status = 'ahead'
-			commitsAhead = detection.commitsAhead
-		} else if (detection.commitsAhead === 0) {
-			status = 'pristine'
-			commitsAhead = 0
-		} else {
-			status = 'unknown'
-			commitsAhead = -1
-		}
+			let status: OrphanStatus
+			let commitsAhead: number
 
-		orphans.push({ branch, status, commitsAhead, merged: detection.merged })
-	}
+			// CRITICAL: check detectionError FIRST to prevent masking failures as 'pristine'
+			if (detection.detectionError) {
+				status = 'unknown'
+				commitsAhead = detection.commitsAhead
+			} else if (detection.merged) {
+				status = 'merged'
+				commitsAhead = 0
+			} else if (detection.commitsAhead > 0) {
+				status = 'ahead'
+				commitsAhead = detection.commitsAhead
+			} else if (detection.commitsAhead === 0) {
+				status = 'pristine'
+				commitsAhead = 0
+			} else {
+				status = 'unknown'
+				commitsAhead = -1
+			}
 
-	return orphans
+			return {
+				branch,
+				status,
+				commitsAhead,
+				merged: detection.merged,
+				mergeMethod: detection.mergeMethod,
+				detectionError: detection.detectionError,
+			}
+		},
+		onError: (branch, error) => ({
+			branch,
+			status: 'unknown' as OrphanStatus,
+			commitsAhead: -1,
+			merged: false,
+			mergeMethod: undefined,
+			detectionError: error instanceof Error ? error.message : String(error),
+		}),
+	})
 }

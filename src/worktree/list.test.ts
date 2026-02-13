@@ -245,4 +245,54 @@ describe('listWorktrees', () => {
 		expect(feature!.commitsAhead).toBe(0)
 		expect(feature!.status).toBe('merged, dirty')
 	})
+
+	test('preserves worktree order with multiple entries', async () => {
+		// Create multiple worktrees
+		const names = ['alpha', 'beta', 'gamma', 'delta']
+		for (const name of names) {
+			const wtPath = path.join(gitRoot, '.worktrees', `feat-${name}`)
+			await spawnAndCollect(['git', 'worktree', 'add', '-b', `feat/${name}`, wtPath], {
+				cwd: gitRoot,
+			})
+		}
+
+		const worktrees = await listWorktrees(gitRoot)
+		const branches = worktrees.map((w) => w.branch)
+
+		// Main worktree should be first (git worktree list always lists main first)
+		expect(branches[0]).toBe('main')
+
+		// All feature branches should be present
+		for (const name of names) {
+			expect(branches).toContain(`feat/${name}`)
+		}
+
+		// Total should be main + 4 features
+		expect(worktrees).toHaveLength(5)
+	})
+
+	test('squash-merged worktree shows mergeMethod in list output', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-squash-list')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/squash-list', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'squash work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash work'], {
+			cwd: wtPath,
+		})
+
+		// Squash merge into main
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat/squash-list'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat/squash-list'], {
+			cwd: gitRoot,
+		})
+
+		const worktrees = await listWorktrees(gitRoot)
+		const squash = worktrees.find((w) => w.branch === 'feat/squash-list')
+
+		expect(squash).toBeDefined()
+		expect(squash!.merged).toBe(true)
+		expect(squash!.mergeMethod).toBe('squash')
+	})
 })
