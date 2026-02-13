@@ -479,8 +479,8 @@ describe('detectMergeStatus - Shallow clone guard', () => {
 		})
 
 		expect(result.merged).toBe(false)
-		expect(result.commitsAhead).toBe(0)
-		expect(result.commitsBehind).toBe(0)
+		expect(result.commitsAhead).toBe(-1)
+		expect(result.commitsBehind).toBe(-1)
 		expect(result.detectionError).toContain('shallow clone')
 		expect(result.mergeMethod).toBeUndefined()
 	})
@@ -532,6 +532,29 @@ describe('detectMergeStatus - Shallow clone guard', () => {
 		expect(result.detectionError).toBeUndefined()
 	})
 
+	test('real shallow clone returns detectionError via checkIsShallow', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		// Shallow clone needs file:// protocol (local clones ignore --depth)
+		const shallowDir = fs.mkdtempSync(path.join(import.meta.dir, '.test-scratch-shallow-'))
+		dirs.push(shallowDir)
+		fs.rmSync(shallowDir, { recursive: true, force: true })
+		await spawnAndCollect(['git', 'clone', '--depth', '1', `file://${gitRoot}`, shallowDir], {})
+
+		// checkIsShallow should return true
+		const isShallow = await checkIsShallow(shallowDir)
+		expect(isShallow).toBe(true)
+
+		// detectMergeStatus with isShallow: true should return error
+		const result = await detectMergeStatus(shallowDir, 'feature', 'main', {
+			isShallow,
+		})
+		expect(result.merged).toBe(false)
+		expect(result.detectionError).toContain('shallow clone')
+		expect(result.commitsAhead).toBe(-1)
+	})
+
 	test('kill switch skips shallow guard', async () => {
 		const gitRoot = await initRepo()
 		await createFeatureCommits(gitRoot, 'feature', 2)
@@ -555,5 +578,29 @@ describe('checkIsShallow', () => {
 		const gitRoot = await initRepo()
 		const result = await checkIsShallow(gitRoot)
 		expect(result).toBe(false)
+	})
+
+	test('returns true for shallow clone', async () => {
+		const gitRoot = await initRepo()
+
+		// Shallow clone needs file:// protocol (local clones ignore --depth)
+		const shallowDir = fs.mkdtempSync(path.join(import.meta.dir, '.test-scratch-shallow-'))
+		dirs.push(shallowDir)
+		// Remove the pre-created dir so git clone can create it
+		fs.rmSync(shallowDir, { recursive: true, force: true })
+		await spawnAndCollect(['git', 'clone', '--depth', '1', `file://${gitRoot}`, shallowDir], {})
+
+		const result = await checkIsShallow(shallowDir)
+		expect(result).toBe(true)
+	})
+
+	test('returns null for non-git directory', async () => {
+		// Use os.tmpdir to ensure we're outside any git repo tree
+		const { tmpdir } = await import('node:os')
+		const nonGitDir = fs.mkdtempSync(path.join(tmpdir(), '.test-nongit-'))
+		dirs.push(nonGitDir)
+
+		const result = await checkIsShallow(nonGitDir)
+		expect(result).toBe(null)
 	})
 })

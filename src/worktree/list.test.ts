@@ -246,7 +246,7 @@ describe('listWorktrees', () => {
 		expect(feature!.status).toBe('merged, dirty')
 	})
 
-	test('preserves worktree order with multiple entries', async () => {
+	test('preserves worktree order matching git worktree list', async () => {
 		// Create multiple worktrees
 		const names = ['alpha', 'beta', 'gamma', 'delta']
 		for (const name of names) {
@@ -256,19 +256,45 @@ describe('listWorktrees', () => {
 			})
 		}
 
+		// Get the canonical order from git
+		const rawResult = await spawnAndCollect(['git', 'worktree', 'list', '--porcelain'], {
+			cwd: gitRoot,
+		})
+		const rawBranches = rawResult.stdout
+			.trim()
+			.split('\n')
+			.filter((l) => l.startsWith('branch '))
+			.map((l) => l.slice('branch '.length).replace('refs/heads/', ''))
+
 		const worktrees = await listWorktrees(gitRoot)
 		const branches = worktrees.map((w) => w.branch)
 
-		// Main worktree should be first (git worktree list always lists main first)
-		expect(branches[0]).toBe('main')
-
-		// All feature branches should be present
-		for (const name of names) {
-			expect(branches).toContain(`feat/${name}`)
-		}
-
-		// Total should be main + 4 features
+		// Exact sequence must match git worktree list order
+		expect(branches).toEqual(rawBranches)
 		expect(worktrees).toHaveLength(5)
+	})
+
+	test('onError fallback preserves isMain for main worktree', async () => {
+		// This tests the safety invariant: if enrichment fails for any entry,
+		// isMain must still be correctly computed from raw entry data.
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-vanish')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/vanish', wtPath], { cwd: gitRoot })
+
+		// Delete the worktree directory to trigger isDirty failure during enrichment
+		fs.rmSync(wtPath, { recursive: true, force: true })
+
+		const worktrees = await listWorktrees(gitRoot)
+
+		// Main should still be correctly identified
+		const main = worktrees.find((w) => w.branch === 'main')
+		expect(main).toBeDefined()
+		expect(main!.isMain).toBe(true)
+
+		// The deleted worktree should have a detectionError from onError handler
+		const vanished = worktrees.find((w) => w.branch === 'feat/vanish')
+		expect(vanished).toBeDefined()
+		expect(vanished!.detectionError).toBeDefined()
+		expect(vanished!.isMain).toBe(false)
 	})
 
 	test('squash-merged worktree shows mergeMethod in list output', async () => {
