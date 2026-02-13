@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- [#11](https://github.com/nathanvale/side-quest-git/pull/11) [`9385a47`](https://github.com/nathanvale/side-quest-git/commit/9385a47f0e68e4fbec302c14fdaaccc3ba1cbd0a) Thanks [@nathanvale](https://github.com/nathanvale)! - Add squash-merge detection for worktree operations
+
+  Worktree clean, delete, list, and orphan commands now detect squash-merged branches using a three-layer cascade: ancestor check, ahead/behind counts, and synthetic commit comparison via `git cherry`. This prevents branches that were squash-merged into main from being incorrectly flagged as unmerged.
+
+  New modules:
+
+  - `merge-status.ts` - shared merge detection with squash awareness
+  - `status-string.ts` - pure status string formatter
+
+  Removed duplicate merge-detection logic from `list.ts`, `delete.ts`, and `orphans.ts`.
+
 ## 0.2.0
 
 ### Minor Changes
