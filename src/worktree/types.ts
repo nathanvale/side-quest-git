@@ -38,6 +38,8 @@ export interface WorktreeInfo {
 	readonly isMain: boolean
 	/** Number of commits ahead of the main branch. */
 	readonly commitsAhead?: number
+	/** Method by which the branch was integrated (if merged). */
+	readonly mergeMethod?: MergeMethod
 	/** Status summary string. */
 	readonly status?: string
 }
@@ -108,6 +110,9 @@ export interface SyncResult {
 	readonly dryRun: boolean
 }
 
+/** Method by which a branch was integrated into the target. */
+export type MergeMethod = 'ancestor' | 'squash'
+
 /** Status of an orphan branch relative to the main branch. */
 export type OrphanStatus = 'pristine' | 'merged' | 'ahead' | 'unknown'
 
@@ -139,6 +144,8 @@ export interface CleanedWorktree {
 	readonly path: string
 	/** Whether the git branch was also deleted. */
 	readonly branchDeleted: boolean
+	/** Method by which the branch was integrated (if merged). */
+	readonly mergeMethod?: MergeMethod
 }
 
 /** A worktree that was skipped during clean. */
@@ -151,6 +158,8 @@ export interface SkippedWorktree {
 	readonly reason: SkipReason
 	/** Error message if reason is 'delete-failed'. */
 	readonly error?: string
+	/** Method by which the branch was integrated (if merged). */
+	readonly mergeMethod?: MergeMethod
 }
 
 /** Output from `worktree clean`. */

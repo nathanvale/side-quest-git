@@ -10,6 +10,7 @@
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
 import { listWorktrees } from './list.js'
+import { detectMergeStatus } from './merge-status.js'
 import type { OrphanBranch, OrphanStatus } from './types.js'
 
 /** Default branches that should never be considered orphans. */
@@ -59,60 +60,27 @@ export async function listOrphanBranches(
 		if (protectedSet.has(branch)) continue
 		if (worktreeBranches.has(branch)) continue
 
-		const { status, commitsAhead, merged } = await classifyBranch(
-			gitRoot,
-			branch,
-			mainBranch,
-		)
+		const detection = await detectMergeStatus(gitRoot, branch, mainBranch)
 
-		orphans.push({ branch, status, commitsAhead, merged })
+		let status: OrphanStatus
+		let commitsAhead: number
+
+		if (detection.merged) {
+			status = 'merged'
+			commitsAhead = 0
+		} else if (detection.commitsAhead > 0) {
+			status = 'ahead'
+			commitsAhead = detection.commitsAhead
+		} else if (detection.commitsAhead === 0) {
+			status = 'pristine'
+			commitsAhead = 0
+		} else {
+			status = 'unknown'
+			commitsAhead = -1
+		}
+
+		orphans.push({ branch, status, commitsAhead, merged: detection.merged })
 	}
 
 	return orphans
-}
-
-/**
- * Classify a branch's status relative to the main branch.
- */
-async function classifyBranch(
-	gitRoot: string,
-	branch: string,
-	mainBranch: string,
-): Promise<{
-	status: OrphanStatus
-	commitsAhead: number
-	merged: boolean
-}> {
-	// Check if merged
-	const mergeResult = await spawnAndCollect(
-		['git', 'merge-base', '--is-ancestor', branch, mainBranch],
-		{ cwd: gitRoot },
-	)
-	const merged = mergeResult.exitCode === 0
-
-	if (merged) {
-		return { status: 'merged', commitsAhead: 0, merged: true }
-	}
-
-	// Count commits ahead
-	const countResult = await spawnAndCollect(
-		['git', 'rev-list', '--count', `${mainBranch}..${branch}`],
-		{ cwd: gitRoot },
-	)
-
-	if (countResult.exitCode !== 0) {
-		return { status: 'unknown', commitsAhead: -1, merged: false }
-	}
-
-	const commitsAhead = parseInt(countResult.stdout.trim(), 10)
-
-	if (Number.isNaN(commitsAhead)) {
-		return { status: 'unknown', commitsAhead: -1, merged: false }
-	}
-
-	if (commitsAhead === 0) {
-		return { status: 'pristine', commitsAhead: 0, merged: false }
-	}
-
-	return { status: 'ahead', commitsAhead, merged: false }
 }

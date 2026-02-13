@@ -95,4 +95,147 @@ describe('cleanWorktrees', () => {
 		const del = result.deleted.find((d) => d.branch === 'feat-branch-del')
 		expect(del?.branchDeleted).toBe(true)
 	})
+
+	test('squash-merged worktree is cleaned', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-squash-merged')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-squash-merged', wtPath], {
+			cwd: gitRoot,
+		})
+
+		// Add commits to the feature branch
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'feature work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'feature work'], {
+			cwd: wtPath,
+		})
+
+		// Squash-merge the feature branch into main
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat-squash-merged'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat-squash-merged'], {
+			cwd: gitRoot,
+		})
+
+		// Assert preconditions: branch is NOT an ancestor (squash creates new SHA)
+		const ancestorCheck = await spawnAndCollect(
+			['git', 'merge-base', '--is-ancestor', 'feat-squash-merged', 'main'],
+			{ cwd: gitRoot },
+		)
+		expect(ancestorCheck.exitCode).toBe(1)
+
+		// Clean should detect the squash-merge and delete the worktree
+		const result = await cleanWorktrees(gitRoot)
+
+		const deletedBranches = result.deleted.map((d) => d.branch)
+		expect(deletedBranches).toContain('feat-squash-merged')
+	})
+
+	test('deleteBranches with squash-merged branch deletes worktree but branch needs force', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-squash-del')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-squash-del', wtPath], {
+			cwd: gitRoot,
+		})
+
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'feature')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'feature'], {
+			cwd: wtPath,
+		})
+
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat-squash-del'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat-squash-del'], { cwd: gitRoot })
+
+		const result = await cleanWorktrees(gitRoot, { deleteBranches: true })
+
+		const deleted = result.deleted.find((d) => d.branch === 'feat-squash-del')
+		expect(deleted).toBeDefined()
+		// git branch -d fails for squash-merged branches (git thinks unmerged)
+		expect(deleted!.branchDeleted).toBe(false)
+	})
+
+	test('force + deleteBranches deletes squash-merged branch with -D', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-squash-force')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-squash-force', wtPath], {
+			cwd: gitRoot,
+		})
+
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'feature')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'feature'], {
+			cwd: wtPath,
+		})
+
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat-squash-force'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat-squash-force'], {
+			cwd: gitRoot,
+		})
+
+		const result = await cleanWorktrees(gitRoot, {
+			force: true,
+			deleteBranches: true,
+		})
+
+		const deleted = result.deleted.find((d) => d.branch === 'feat-squash-force')
+		expect(deleted).toBeDefined()
+		expect(deleted!.branchDeleted).toBe(true)
+
+		// Verify branch is actually gone
+		const branchCheck = await spawnAndCollect(
+			['git', 'rev-parse', '--verify', 'feat-squash-force'],
+			{ cwd: gitRoot },
+		)
+		expect(branchCheck.exitCode).not.toBe(0)
+	})
+
+	test('unmerged branch is skipped even with squash detection', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-unmerged')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-unmerged', wtPath], {
+			cwd: gitRoot,
+		})
+
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'unmerged work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'unmerged work'], {
+			cwd: wtPath,
+		})
+
+		// Do NOT merge - this branch is genuinely unmerged
+		const result = await cleanWorktrees(gitRoot)
+
+		const skipped = result.skipped.find((s) => s.branch === 'feat-unmerged')
+		expect(skipped).toBeDefined()
+		expect(skipped!.reason).toBe('unmerged')
+	})
+
+	test('multi-commit squash-merged worktree is cleaned', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-multi-squash')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-multi-squash', wtPath], {
+			cwd: gitRoot,
+		})
+
+		// Create multiple commits
+		for (let i = 1; i <= 3; i++) {
+			fs.writeFileSync(path.join(wtPath, `file${i}.txt`), `content ${i}`)
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', `commit ${i}`], {
+				cwd: wtPath,
+			})
+		}
+
+		// Squash all 3 commits into main
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat-multi-squash'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat-multi-squash'], {
+			cwd: gitRoot,
+		})
+
+		// Assert preconditions
+		const ancestorCheck = await spawnAndCollect(
+			['git', 'merge-base', '--is-ancestor', 'feat-multi-squash', 'main'],
+			{ cwd: gitRoot },
+		)
+		expect(ancestorCheck.exitCode).toBe(1)
+
+		const result = await cleanWorktrees(gitRoot)
+		const deletedBranches = result.deleted.map((d) => d.branch)
+		expect(deletedBranches).toContain('feat-multi-squash')
+	})
 })

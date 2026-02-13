@@ -4,6 +4,8 @@
 
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
+import { detectMergeStatus } from './merge-status.js'
+import { buildStatusString } from './status-string.js'
 import type { WorktreeInfo } from './types.js'
 
 export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
@@ -21,7 +23,7 @@ export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
 	const mainBranch = await getMainBranch(gitRoot)
 
 	return Promise.all(
-		entries.map((entry) => enrichWorktreeInfo(entry, mainBranch)),
+		entries.map((entry) => enrichWorktreeInfo(entry, mainBranch, gitRoot)),
 	)
 }
 
@@ -72,6 +74,7 @@ function parsePorcelainOutput(output: string): RawWorktreeEntry[] {
 async function enrichWorktreeInfo(
 	entry: RawWorktreeEntry,
 	mainBranch: string,
+	gitRoot: string,
 ): Promise<WorktreeInfo> {
 	const isMain =
 		entry.isBare ||
@@ -80,73 +83,37 @@ async function enrichWorktreeInfo(
 		entry.branch === 'master'
 
 	const dirty = await isDirty(entry.path)
-	const merged = isMain
-		? true
-		: await isMerged(entry.path, entry.branch, mainBranch)
 
-	// Compute commits ahead (lightweight)
-	let commitsAhead: number | undefined
-	let status: string | undefined
-
-	if (!isMain && entry.branch !== '(detached)') {
-		try {
-			const countResult = await spawnAndCollect(
-				['git', 'rev-list', '--count', `${mainBranch}..${entry.branch}`],
-				{ cwd: entry.path },
-			)
-			if (countResult.exitCode === 0) {
-				commitsAhead = Number.parseInt(countResult.stdout.trim(), 10)
-
-				// Compute status string
-				// To distinguish between "merged" and "pristine", check if main has moved forward
-				// If merged = true and main has commits this branch doesn't have, it's "merged"
-				// If merged = true and main is at the same point, it's "pristine"
-				if (merged && commitsAhead === 0) {
-					const behindResult = await spawnAndCollect(
-						['git', 'rev-list', '--count', `${entry.branch}..${mainBranch}`],
-						{ cwd: entry.path },
-					)
-					const commitsBehind =
-						behindResult.exitCode === 0
-							? Number.parseInt(behindResult.stdout.trim(), 10)
-							: 0
-
-					if (commitsBehind > 0) {
-						// Main has moved forward, so this branch is behind (merged or just old).
-						// Keep dirty state visible so status summaries stay accurate.
-						status = dirty ? 'merged, dirty' : 'merged'
-					} else if (dirty) {
-						// At same point as main, but has uncommitted changes
-						status = 'dirty'
-					} else {
-						// At same point as main, no changes - pristine
-						status = 'pristine'
-					}
-				} else if (commitsAhead > 0 && dirty) {
-					status = `${commitsAhead} ahead, dirty`
-				} else if (commitsAhead > 0) {
-					status = `${commitsAhead} ahead`
-				} else if (dirty) {
-					status = 'dirty'
-				} else {
-					status = 'pristine'
-				}
-			} else {
-				status = 'unknown'
-			}
-		} catch {
-			status = 'unknown'
+	if (isMain || entry.branch === '(detached)') {
+		return {
+			branch: entry.branch,
+			path: entry.path,
+			head: entry.head,
+			dirty,
+			merged: isMain,
+			isMain,
 		}
 	}
+
+	const detection = await detectMergeStatus(gitRoot, entry.branch, mainBranch)
+
+	const status = buildStatusString({
+		merged: detection.merged,
+		dirty,
+		commitsAhead: detection.commitsAhead,
+		commitsBehind: detection.commitsBehind,
+		mergeMethod: detection.mergeMethod,
+	})
 
 	return {
 		branch: entry.branch,
 		path: entry.path,
 		head: entry.head,
 		dirty,
-		merged,
+		merged: detection.merged,
 		isMain,
-		commitsAhead,
+		commitsAhead: detection.commitsAhead,
+		mergeMethod: detection.mergeMethod,
 		status,
 	}
 }
@@ -156,20 +123,4 @@ async function isDirty(worktreePath: string): Promise<boolean> {
 		cwd: worktreePath,
 	})
 	return result.exitCode === 0 && result.stdout.trim().length > 0
-}
-
-async function isMerged(
-	worktreePath: string,
-	branch: string,
-	mainBranch: string,
-): Promise<boolean> {
-	if (branch === '(detached)') {
-		return false
-	}
-
-	const result = await spawnAndCollect(
-		['git', 'merge-base', '--is-ancestor', branch, mainBranch],
-		{ cwd: worktreePath },
-	)
-	return result.exitCode === 0
 }
