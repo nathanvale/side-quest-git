@@ -2,9 +2,10 @@
  * Worktree listing with status enrichment.
  */
 
+import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
-import { detectMergeStatus } from './merge-status.js'
+import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import { buildStatusString } from './status-string.js'
 import type { WorktreeInfo } from './types.js'
 
@@ -21,10 +22,25 @@ export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
 
 	const entries = parsePorcelainOutput(result.stdout)
 	const mainBranch = await getMainBranch(gitRoot)
+	const isShallow = await checkIsShallow(gitRoot)
 
-	return Promise.all(
-		entries.map((entry) => enrichWorktreeInfo(entry, mainBranch, gitRoot)),
-	)
+	return processInParallelChunks({
+		items: [...entries],
+		chunkSize: 4,
+		processor: async (entry) =>
+			enrichWorktreeInfo(entry, mainBranch, gitRoot, isShallow),
+		onError: (entry, error) =>
+			({
+				branch: entry.branch,
+				path: entry.path,
+				head: entry.head,
+				dirty: false,
+				merged: false,
+				isMain: false,
+				status: 'enrichment failed',
+				detectionError: error instanceof Error ? error.message : String(error),
+			}) satisfies WorktreeInfo,
+	})
 }
 
 interface RawWorktreeEntry {
@@ -75,6 +91,7 @@ async function enrichWorktreeInfo(
 	entry: RawWorktreeEntry,
 	mainBranch: string,
 	gitRoot: string,
+	isShallow: boolean | null,
 ): Promise<WorktreeInfo> {
 	const isMain =
 		entry.isBare ||
@@ -95,7 +112,9 @@ async function enrichWorktreeInfo(
 		}
 	}
 
-	const detection = await detectMergeStatus(gitRoot, entry.branch, mainBranch)
+	const detection = await detectMergeStatus(gitRoot, entry.branch, mainBranch, {
+		isShallow,
+	})
 
 	const status = buildStatusString({
 		merged: detection.merged,
@@ -115,6 +134,7 @@ async function enrichWorktreeInfo(
 		commitsAhead: detection.commitsAhead,
 		mergeMethod: detection.mergeMethod,
 		status,
+		detectionError: detection.detectionError,
 	}
 }
 

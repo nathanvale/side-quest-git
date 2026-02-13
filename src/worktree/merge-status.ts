@@ -34,6 +34,23 @@ export interface MergeDetectionResult {
 export interface DetectionOptions {
 	readonly timeout?: number
 	readonly maxCommitsForSquashDetection?: number
+	/** Pre-computed shallow clone status. true = shallow, false = not shallow, null = check failed. */
+	readonly isShallow?: boolean | null
+}
+
+/**
+ * Check if a git repository is a shallow clone.
+ *
+ * @param gitRoot - Absolute path to git repository root
+ * @returns true if shallow, false if not, null if check failed
+ */
+export async function checkIsShallow(gitRoot: string): Promise<boolean | null> {
+	const result = await spawnAndCollect(
+		['git', 'rev-parse', '--is-shallow-repository'],
+		{ cwd: gitRoot },
+	)
+	if (result.exitCode !== 0) return null
+	return result.stdout.trim() === 'true'
 }
 
 /**
@@ -60,6 +77,24 @@ export async function detectMergeStatus(
 	const maxCommitsForSquashDetection =
 		options.maxCommitsForSquashDetection ?? 50
 
+	// Shallow clone guard: skip if squash detection is disabled
+	if (process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1') {
+		if (options.isShallow === true) {
+			return {
+				merged: false,
+				commitsAhead: 0,
+				commitsBehind: 0,
+				detectionError: 'shallow clone: detection unavailable',
+			}
+		}
+	}
+
+	const shallowWarning =
+		process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1' &&
+		options.isShallow === null
+			? 'shallow check failed: proceeding with detection'
+			: undefined
+
 	// Resolve target branch if not provided
 	const target = targetBranch ?? (await getMainBranch(gitRoot))
 
@@ -81,6 +116,7 @@ export async function detectMergeStatus(
 			mergeMethod: 'ancestor',
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
+			...(shallowWarning ? { detectionError: shallowWarning } : {}),
 		}
 	}
 
@@ -107,6 +143,7 @@ export async function detectMergeStatus(
 			merged: false,
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
+			...(shallowWarning ? { detectionError: shallowWarning } : {}),
 		}
 	}
 
@@ -214,6 +251,7 @@ export async function detectMergeStatus(
 				mergeMethod: 'squash',
 				commitsAhead: counts.ahead,
 				commitsBehind: counts.behind,
+				...(shallowWarning ? { detectionError: shallowWarning } : {}),
 			}
 		}
 	} finally {
@@ -224,6 +262,7 @@ export async function detectMergeStatus(
 		merged: false,
 		commitsAhead: counts.ahead,
 		commitsBehind: counts.behind,
+		...(shallowWarning ? { detectionError: shallowWarning } : {}),
 	}
 }
 

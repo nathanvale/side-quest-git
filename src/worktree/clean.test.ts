@@ -238,4 +238,53 @@ describe('cleanWorktrees', () => {
 		const deletedBranches = result.deleted.map((d) => d.branch)
 		expect(deletedBranches).toContain('feat-multi-squash')
 	})
+
+	test('squash-merged worktree clean output includes mergeMethod', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-squash-audit')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-squash-audit', wtPath], {
+			cwd: gitRoot,
+		})
+
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'feature work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'feature work'], {
+			cwd: wtPath,
+		})
+
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat-squash-audit'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat-squash-audit'], {
+			cwd: gitRoot,
+		})
+
+		const result = await cleanWorktrees(gitRoot)
+
+		const deleted = result.deleted.find((d) => d.branch === 'feat-squash-audit')
+		expect(deleted).toBeDefined()
+		expect(deleted!.mergeMethod).toBe('squash')
+	})
+
+	test('is-main skip has no mergeMethod', async () => {
+		const result = await cleanWorktrees(gitRoot)
+		const mainSkip = result.skipped.find((s) => s.reason === 'is-main')
+		expect(mainSkip).toBeDefined()
+		expect(mainSkip!.mergeMethod).toBeUndefined()
+	})
+
+	test('unmerged skip includes mergeMethod undefined', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-unmerged-audit')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-unmerged-audit', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'unmerged work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'unmerged work'], {
+			cwd: wtPath,
+		})
+
+		const result = await cleanWorktrees(gitRoot)
+		const skipped = result.skipped.find((s) => s.branch === 'feat-unmerged-audit')
+		expect(skipped).toBeDefined()
+		expect(skipped!.reason).toBe('unmerged')
+		expect(skipped!.mergeMethod).toBeUndefined()
+	})
 })

@@ -42,6 +42,8 @@ export interface WorktreeInfo {
 	readonly mergeMethod?: MergeMethod
 	/** Status summary string. */
 	readonly status?: string
+	/** Detection error or warning message. */
+	readonly detectionError?: string
 }
 
 /** Output from `worktree create`. */
@@ -126,6 +128,10 @@ export interface OrphanBranch {
 	readonly commitsAhead: number
 	/** Whether the branch is fully merged into main. */
 	readonly merged: boolean
+	/** Method by which the branch was integrated (if merged). */
+	readonly mergeMethod?: MergeMethod
+	/** Detection error or warning message. */
+	readonly detectionError?: string
 }
 
 /** Reason a worktree was skipped during clean. */

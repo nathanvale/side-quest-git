@@ -126,4 +126,48 @@ describe('listOrphanBranches', () => {
 		expect(customOrphans.find((o) => o.branch === 'staging')).toBeUndefined()
 		expect(customOrphans.find((o) => o.branch === 'develop')).toBeDefined()
 	})
+
+	test('squash-merged orphan reports mergeMethod', async () => {
+		await spawnAndCollect(['git', 'checkout', '-b', 'feat-squash-orphan'], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(gitRoot, 'feature.txt'), 'squash content')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash content'], {
+			cwd: gitRoot,
+		})
+		await spawnAndCollect(['git', 'checkout', 'main'], {
+			cwd: gitRoot,
+		})
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat-squash-orphan'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge'], { cwd: gitRoot })
+
+		const orphans = await listOrphanBranches(gitRoot)
+		const squashOrphan = orphans.find((o) => o.branch === 'feat-squash-orphan')
+		expect(squashOrphan).toBeDefined()
+		expect(squashOrphan!.merged).toBe(true)
+		expect(squashOrphan!.status).toBe('merged')
+		expect(squashOrphan!.mergeMethod).toBe('squash')
+	})
+
+	test('ancestor-merged orphan reports mergeMethod', async () => {
+		await spawnAndCollect(['git', 'checkout', '-b', 'feat-ancestor-orphan'], { cwd: gitRoot })
+		fs.writeFileSync(path.join(gitRoot, 'ancestor.txt'), 'ancestor content')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'ancestor work'], {
+			cwd: gitRoot,
+		})
+		await spawnAndCollect(['git', 'checkout', 'main'], {
+			cwd: gitRoot,
+		})
+		await spawnAndCollect(['git', 'merge', 'feat-ancestor-orphan'], {
+			cwd: gitRoot,
+		})
+
+		const orphans = await listOrphanBranches(gitRoot)
+		const ancestorOrphan = orphans.find((o) => o.branch === 'feat-ancestor-orphan')
+		expect(ancestorOrphan).toBeDefined()
+		expect(ancestorOrphan!.merged).toBe(true)
+		expect(ancestorOrphan!.mergeMethod).toBe('ancestor')
+	})
 })
