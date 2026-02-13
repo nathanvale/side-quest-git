@@ -4,9 +4,10 @@
 
 import path from 'node:path'
 import { shellExec, spawnAndCollect } from '@side-quest/core/spawn'
-import { getMainBranch } from '../git/main-branch.js'
 import { loadOrDetectConfig } from './config.js'
-import type { DeleteResult } from './types.js'
+import { detectMergeStatus } from './merge-status.js'
+import { buildStatusString } from './status-string.js'
+import type { DeleteResult, MergeMethod } from './types.js'
 import { validateShellCommand } from './validate.js'
 
 export interface DeleteCheck {
@@ -16,6 +17,7 @@ export interface DeleteCheck {
 	readonly merged: boolean
 	readonly exists: boolean
 	readonly commitsAhead?: number
+	readonly mergeMethod?: MergeMethod
 	readonly status?: string
 }
 
@@ -51,73 +53,24 @@ export async function checkBeforeDelete(
 	const dirty =
 		statusResult.exitCode === 0 && statusResult.stdout.trim().length > 0
 
-	const mainBranch = await getMainBranch(gitRoot)
-	const mergeResult = await spawnAndCollect(
-		['git', 'merge-base', '--is-ancestor', branchName, mainBranch],
-		{ cwd: gitRoot },
-	)
-	const merged = mergeResult.exitCode === 0
+	const detection = await detectMergeStatus(gitRoot, branchName)
 
-	// Compute commits ahead (lightweight)
-	let commitsAhead: number | undefined
-	let status: string | undefined
-
-	try {
-		const countResult = await spawnAndCollect(
-			['git', 'rev-list', '--count', `${mainBranch}..${branchName}`],
-			{ cwd: worktreePath },
-		)
-		if (countResult.exitCode === 0) {
-			commitsAhead = Number.parseInt(countResult.stdout.trim(), 10)
-
-			// Compute status string
-			// To distinguish between "merged" and "pristine", check if main has moved forward
-			// If merged = true and main has commits this branch doesn't have, it's "merged"
-			// If merged = true and main is at the same point, it's "pristine"
-			if (merged && commitsAhead === 0) {
-				const behindResult = await spawnAndCollect(
-					['git', 'rev-list', '--count', `${branchName}..${mainBranch}`],
-					{ cwd: worktreePath },
-				)
-				const commitsBehind =
-					behindResult.exitCode === 0
-						? Number.parseInt(behindResult.stdout.trim(), 10)
-						: 0
-
-				if (commitsBehind > 0) {
-					// Main has moved forward, so this branch is behind (merged or just old).
-					// Keep dirty state visible so safety checks don't look clean.
-					status = dirty ? 'merged, dirty' : 'merged'
-				} else if (dirty) {
-					// At same point as main, but has uncommitted changes
-					status = 'dirty'
-				} else {
-					// At same point as main, no changes - pristine
-					status = 'pristine'
-				}
-			} else if (commitsAhead > 0 && dirty) {
-				status = `${commitsAhead} ahead, dirty`
-			} else if (commitsAhead > 0) {
-				status = `${commitsAhead} ahead`
-			} else if (dirty) {
-				status = 'dirty'
-			} else {
-				status = 'pristine'
-			}
-		} else {
-			status = 'unknown'
-		}
-	} catch {
-		status = 'unknown'
-	}
+	const status = buildStatusString({
+		merged: detection.merged,
+		dirty,
+		commitsAhead: detection.commitsAhead,
+		commitsBehind: detection.commitsBehind,
+		mergeMethod: detection.mergeMethod,
+	})
 
 	return {
 		path: worktreePath,
 		branch: branchName,
 		dirty,
-		merged,
+		merged: detection.merged,
 		exists,
-		commitsAhead,
+		commitsAhead: detection.commitsAhead,
+		mergeMethod: detection.mergeMethod,
 		status,
 	}
 }

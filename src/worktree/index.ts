@@ -28,6 +28,7 @@ export { listWorktrees } from './list.js'
 export { listOrphanBranches } from './orphans.js'
 export type { StatusOptions } from './status.js'
 export { getWorktreeStatus } from './status.js'
+export { buildStatusString, type StatusInput } from './status-string.js'
 export { syncAllWorktrees, syncWorktree } from './sync.js'
 export type {
 	CleanedWorktree,
@@ -35,6 +36,7 @@ export type {
 	CreateResult,
 	DeleteResult,
 	InstallResult,
+	MergeMethod,
 	OrphanBranch,
 	OrphanStatus,
 	PullRequestInfo,
