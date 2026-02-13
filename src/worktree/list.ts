@@ -29,17 +29,25 @@ export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
 		chunkSize: 4,
 		processor: async (entry) =>
 			enrichWorktreeInfo(entry, mainBranch, gitRoot, isShallow),
-		onError: (entry, error) =>
-			({
+		onError: (entry, error) => {
+			// Compute isMain from raw entry data to preserve safety invariant.
+			// cleanWorktrees trusts isMain to guard against deleting the main worktree.
+			const isMain =
+				entry.isBare ||
+				entry.branch === mainBranch ||
+				entry.branch === 'main' ||
+				entry.branch === 'master'
+			return {
 				branch: entry.branch,
 				path: entry.path,
 				head: entry.head,
 				dirty: false,
 				merged: false,
-				isMain: false,
+				isMain,
 				status: 'enrichment failed',
 				detectionError: error instanceof Error ? error.message : String(error),
-			}) satisfies WorktreeInfo,
+			} satisfies WorktreeInfo
+		},
 	})
 }
 

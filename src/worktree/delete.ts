@@ -5,7 +5,7 @@
 import path from 'node:path'
 import { shellExec, spawnAndCollect } from '@side-quest/core/spawn'
 import { loadOrDetectConfig } from './config.js'
-import { detectMergeStatus } from './merge-status.js'
+import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import { buildStatusString } from './status-string.js'
 import type { DeleteResult, MergeMethod } from './types.js'
 import { validateShellCommand } from './validate.js'
@@ -53,7 +53,10 @@ export async function checkBeforeDelete(
 	const dirty =
 		statusResult.exitCode === 0 && statusResult.stdout.trim().length > 0
 
-	const detection = await detectMergeStatus(gitRoot, branchName)
+	const isShallow = await checkIsShallow(gitRoot)
+	const detection = await detectMergeStatus(gitRoot, branchName, undefined, {
+		isShallow,
+	})
 
 	const status = buildStatusString({
 		merged: detection.merged,
