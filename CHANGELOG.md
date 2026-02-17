@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1
+
+### Patch Changes
+
+- [#33](https://github.com/nathanvale/side-quest-git/pull/33) [`18a3a1d`](https://github.com/nathanvale/side-quest-git/commit/18a3a1d1875ac15b1da5b5f228c39a2cec50caf4) Thanks [@nathanvale](https://github.com/nathanvale)! - Fix safety and consistency issues from staff review of squash-merge detection v2
+
+  - **Main-worktree safety**: `onError` handler in `listWorktrees()` now computes `isMain` from raw entry data instead of hardcoding `false`, preventing `cleanWorktrees` from accidentally targeting main if enrichment fails.
+  - **Shallow-guard boundary**: `checkBeforeDelete()` now passes `isShallow` to `detectMergeStatus`, matching the behavior in `listWorktrees()` and `listOrphanBranches()`.
+  - **Commit-count semantics**: Shallow guard returns `commitsAhead: -1` (unknown sentinel) instead of `0`, consistent with `onError` handlers and `OrphanBranch` contract.
+  - **Changeset description**: Clarified that both `listWorktrees()` and `listOrphanBranches()` include `onError` handlers.
+
 ## 0.4.0
 
 ### Minor Changes
