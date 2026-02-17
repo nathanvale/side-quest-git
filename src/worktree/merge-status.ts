@@ -82,8 +82,8 @@ export async function detectMergeStatus(
 		if (options.isShallow === true) {
 			return {
 				merged: false,
-				commitsAhead: 0,
-				commitsBehind: 0,
+				commitsAhead: -1,
+				commitsBehind: -1,
 				detectionError: 'shallow clone: detection unavailable',
 			}
 		}
