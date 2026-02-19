@@ -9,8 +9,38 @@ import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import { buildStatusString } from './status-string.js'
 import type { WorktreeInfo } from './types.js'
+import { checkUpstreamGone } from './upstream-gone.js'
 
-export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
+/** Options for listWorktrees. */
+export interface ListWorktreesOptions {
+	/**
+	 * Override the Layer 3 cherry detection timeout in milliseconds.
+	 *
+	 * Why: Allows callers (e.g. `--timeout` CLI flag) to tune squash detection
+	 * per-run without touching env vars. Precedence: this value >
+	 * SIDE_QUEST_DETECTION_TIMEOUT_MS env var > default 5000ms.
+	 */
+	detectionTimeout?: number
+	/**
+	 * Skip the shallow clone guard during merge detection.
+	 *
+	 * Why: CI environments often use shallow clones. Pass this when clone depth
+	 * is known to be sufficient for the branches under inspection.
+	 */
+	shallowOk?: boolean
+}
+
+/**
+ * List all worktrees in the repository with enriched status.
+ *
+ * @param gitRoot - Main worktree root
+ * @param options - Options including optional detection timeout override
+ * @returns Array of enriched worktree info objects
+ */
+export async function listWorktrees(
+	gitRoot: string,
+	options: ListWorktreesOptions = {},
+): Promise<WorktreeInfo[]> {
 	const result = await spawnAndCollect(
 		['git', 'worktree', 'list', '--porcelain'],
 		{
@@ -41,7 +71,15 @@ export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
 		chunkSize: 4,
 		processor: async (entry) => {
 			const signal = AbortSignal.timeout(itemTimeoutMs)
-			return enrichWorktreeInfo(entry, mainBranch, gitRoot, isShallow, signal)
+			return enrichWorktreeInfo(
+				entry,
+				mainBranch,
+				gitRoot,
+				isShallow,
+				signal,
+				options.detectionTimeout,
+				options.shallowOk,
+			)
 		},
 		onError: (entry, error) => {
 			// Compute isMain from raw entry data to preserve safety invariant.
@@ -126,6 +164,8 @@ async function enrichWorktreeInfo(
 	gitRoot: string,
 	isShallow: boolean | null,
 	signal?: AbortSignal,
+	detectionTimeout?: number,
+	shallowOk?: boolean,
 ): Promise<WorktreeInfo> {
 	const isMain =
 		entry.isBare ||
@@ -146,10 +186,17 @@ async function enrichWorktreeInfo(
 		}
 	}
 
-	const detection = await detectMergeStatus(gitRoot, entry.branch, mainBranch, {
-		isShallow,
-		signal,
-	})
+	// Run merge detection and upstream-gone check concurrently -- they are
+	// independent git calls and neither blocks the other.
+	const [detection, upstreamGone] = await Promise.all([
+		detectMergeStatus(gitRoot, entry.branch, mainBranch, {
+			isShallow,
+			signal,
+			...(detectionTimeout !== undefined ? { timeout: detectionTimeout } : {}),
+			...(shallowOk !== undefined ? { shallowOk } : {}),
+		}),
+		checkUpstreamGone(gitRoot, entry.branch),
+	])
 
 	const status = buildStatusString({
 		merged: detection.merged,
@@ -172,6 +219,8 @@ async function enrichWorktreeInfo(
 		status,
 		detectionError: detection.detectionError,
 		issues: detection.issues,
+		// Only include the field when it is true to keep output clean for the common case.
+		...(upstreamGone ? { upstreamGone: true } : {}),
 	}
 }
 

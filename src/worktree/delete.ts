@@ -4,6 +4,7 @@
 
 import path from 'node:path'
 import { shellExec, spawnAndCollect } from '@side-quest/core/spawn'
+import { createBackupRef } from './backup.js'
 import { loadOrDetectConfig } from './config.js'
 import type { DetectionIssue } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
@@ -30,6 +31,25 @@ export interface DeleteCheck {
 	readonly issues?: readonly DetectionIssue[]
 }
 
+/** Options for checkBeforeDelete. */
+export interface CheckBeforeDeleteOptions {
+	/**
+	 * Override the Layer 3 cherry detection timeout in milliseconds.
+	 *
+	 * Why: Allows callers (e.g. `--timeout` CLI flag) to tune squash detection
+	 * per-run without touching env vars. Precedence: this value >
+	 * SIDE_QUEST_DETECTION_TIMEOUT_MS env var > default 5000ms.
+	 */
+	detectionTimeout?: number
+	/**
+	 * Skip the shallow clone guard during merge detection.
+	 *
+	 * Why: CI environments often use shallow clones. Pass this when clone depth
+	 * is known to be sufficient for the branches under inspection.
+	 */
+	shallowOk?: boolean
+}
+
 /**
  * Check merge and dirty status for a worktree before deletion.
  *
@@ -39,11 +59,13 @@ export interface DeleteCheck {
  *
  * @param gitRoot - Main worktree root
  * @param branchName - Branch name of the worktree to check
+ * @param options - Options including optional detection timeout override
  * @returns Status snapshot including existence, dirty, merged, and mergeMethod
  */
 export async function checkBeforeDelete(
 	gitRoot: string,
 	branchName: string,
+	options: CheckBeforeDeleteOptions = {},
 ): Promise<DeleteCheck> {
 	const { config } = loadOrDetectConfig(gitRoot)
 	const sanitizedBranch = branchName.replace(/\//g, '-')
@@ -76,6 +98,12 @@ export async function checkBeforeDelete(
 	const isShallow = await checkIsShallow(gitRoot)
 	const detection = await detectMergeStatus(gitRoot, branchName, undefined, {
 		isShallow,
+		...(options.detectionTimeout !== undefined
+			? { timeout: options.detectionTimeout }
+			: {}),
+		...(options.shallowOk !== undefined
+			? { shallowOk: options.shallowOk }
+			: {}),
 	})
 
 	const status = buildStatusString({
@@ -148,6 +176,14 @@ export async function deleteWorktree(
 
 	let branchDeleted = false
 	if (options.deleteBranch) {
+		// Best-effort backup before deletion -- never fail the delete if backup fails.
+		// This gives operators a recovery path via `worktree recover <branch>`.
+		try {
+			await createBackupRef(gitRoot, branchName)
+		} catch {
+			// Silently swallow -- backup failure must not block the delete.
+		}
+
 		const deleteFlag = options.force ? '-D' : '-d'
 		const branchResult = await spawnAndCollect(
 			['git', 'branch', deleteFlag, branchName],

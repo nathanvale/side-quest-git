@@ -13,6 +13,7 @@ import { getMainBranch } from '../git/main-branch.js'
 import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import type { OrphanBranch, OrphanStatus } from './types.js'
+import { checkUpstreamGone } from './upstream-gone.js'
 
 /** Default branches that should never be considered orphans. */
 const DEFAULT_PROTECTED = ['main', 'master', 'develop']
@@ -48,6 +49,27 @@ export async function getWorktreeBranches(
 	return branches
 }
 
+/** Options for listOrphanBranches. */
+export interface ListOrphanBranchesOptions {
+	/** Branches that should never be considered orphans. */
+	protectedBranches?: readonly string[]
+	/**
+	 * Override the Layer 3 cherry detection timeout in milliseconds.
+	 *
+	 * Why: Allows callers (e.g. `--timeout` CLI flag) to tune squash detection
+	 * per-run without touching env vars. Precedence: this value >
+	 * SIDE_QUEST_DETECTION_TIMEOUT_MS env var > default 5000ms.
+	 */
+	detectionTimeout?: number
+	/**
+	 * Skip the shallow clone guard during merge detection.
+	 *
+	 * Why: CI environments often use shallow clones. Pass this when clone depth
+	 * is known to be sufficient for the branches under inspection.
+	 */
+	shallowOk?: boolean
+}
+
 /**
  * List local branches that have no associated worktree.
  *
@@ -56,12 +78,12 @@ export async function getWorktreeBranches(
  * their merge status, and lets batch cleanup tools decide what to do.
  *
  * @param gitRoot - Main worktree root
- * @param options - Options for filtering
+ * @param options - Options for filtering and detection tuning
  * @returns Array of orphan branches with status info
  */
 export async function listOrphanBranches(
 	gitRoot: string,
-	options: { protectedBranches?: readonly string[] } = {},
+	options: ListOrphanBranchesOptions = {},
 ): Promise<OrphanBranch[]> {
 	const protectedSet = new Set(options.protectedBranches ?? DEFAULT_PROTECTED)
 
@@ -108,10 +130,22 @@ export async function listOrphanBranches(
 		chunkSize: 4,
 		processor: async (branch) => {
 			const signal = AbortSignal.timeout(itemTimeoutMs)
-			const detection = await detectMergeStatus(gitRoot, branch, mainBranch, {
-				isShallow,
-				signal,
-			})
+
+			// Run merge detection and upstream-gone check concurrently -- they are
+			// independent git calls and neither blocks the other.
+			const [detection, upstreamGone] = await Promise.all([
+				detectMergeStatus(gitRoot, branch, mainBranch, {
+					isShallow,
+					signal,
+					...(options.detectionTimeout !== undefined
+						? { timeout: options.detectionTimeout }
+						: {}),
+					...(options.shallowOk !== undefined
+						? { shallowOk: options.shallowOk }
+						: {}),
+				}),
+				checkUpstreamGone(gitRoot, branch),
+			])
 
 			let status: OrphanStatus
 			let commitsAhead: number
@@ -142,6 +176,8 @@ export async function listOrphanBranches(
 				mergeMethod: detection.mergeMethod,
 				detectionError: detection.detectionError,
 				issues: detection.issues,
+				// Only include the field when it is true to keep output clean for the common case.
+				...(upstreamGone ? { upstreamGone: true } : {}),
 			}
 		},
 		onError: (branch, error) => {

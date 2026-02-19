@@ -92,16 +92,24 @@ async function main(): Promise<void> {
 		}
 
 		case 'list': {
-			const worktrees = await listWorktrees(gitRoot)
 			const showAll = flags.all === true
 			const includeOrphans = flags['include-orphans'] === true
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
+			const worktrees = await listWorktrees(gitRoot, {
+				detectionTimeout,
+				shallowOk,
+			})
 			const filtered = showAll
 				? worktrees
 				: worktrees.filter((worktree) => !worktree.isMain)
 
 			if (includeOrphans) {
 				const { listOrphanBranches } = await import('./orphans.js')
-				const orphans = await listOrphanBranches(gitRoot)
+				const orphans = await listOrphanBranches(gitRoot, {
+					detectionTimeout,
+					shallowOk,
+				})
 				output({ worktrees: filtered, orphans })
 			} else {
 				output(filtered)
@@ -135,9 +143,16 @@ async function main(): Promise<void> {
 		case 'check': {
 			const branchName = args[0]
 			if (!branchName) {
-				fail('Usage: side-quest-git worktree check <branch-name>')
+				fail(
+					'Usage: side-quest-git worktree check <branch-name> [--timeout <ms>] [--shallow-ok]',
+				)
 			}
-			const result = await checkBeforeDelete(gitRoot, branchName)
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
+			const result = await checkBeforeDelete(gitRoot, branchName, {
+				detectionTimeout,
+				shallowOk,
+			})
 			output(result)
 			break
 		}
@@ -235,8 +250,13 @@ async function main(): Promise<void> {
 		}
 
 		case 'orphans': {
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
 			const { listOrphanBranches } = await import('./orphans.js')
-			const orphans = await listOrphanBranches(gitRoot)
+			const orphans = await listOrphanBranches(gitRoot, {
+				detectionTimeout,
+				shallowOk,
+			})
 			output(orphans)
 			break
 		}
@@ -246,6 +266,8 @@ async function main(): Promise<void> {
 			const force = flags.force === true
 			const deleteBranches = flags['delete-branches'] === true
 			const includeOrphans = flags['include-orphans'] === true
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
 
 			if (force && !dryRun) {
 				console.error(
@@ -262,6 +284,8 @@ async function main(): Promise<void> {
 				dryRun,
 				deleteBranches,
 				includeOrphans,
+				shallowOk,
+				detectionTimeout,
 			})
 			void emitCliEvent('worktree.cleaned', result, {
 				repo: path.basename(gitRoot),
@@ -272,9 +296,36 @@ async function main(): Promise<void> {
 			break
 		}
 
+		case 'recover': {
+			const { cleanupBackupRefs, listBackupRefs, restoreBackupRef } =
+				await import('./backup.js')
+
+			const cleanup = flags.cleanup === true
+			const maxAgeDays = parseMaxAgeDays(flags['max-age'])
+
+			if (cleanup) {
+				// `worktree recover --cleanup [--max-age <days>]`
+				const deleted = await cleanupBackupRefs(gitRoot, maxAgeDays)
+				output({ cleaned: deleted, count: deleted.length })
+				break
+			}
+
+			const targetBranch = args[0]
+			if (targetBranch) {
+				// `worktree recover <branch>` -- restore from backup
+				await restoreBackupRef(gitRoot, targetBranch)
+				output({ restored: targetBranch })
+			} else {
+				// `worktree recover` -- list all backup refs
+				const refs = await listBackupRefs(gitRoot)
+				output(refs)
+			}
+			break
+		}
+
 		default:
 			fail(
-				`Unknown worktree command: ${worktreeCommand || '(none)'}. Available: create, list, delete, check, init, install, sync, status, orphans, clean`,
+				`Unknown worktree command: ${worktreeCommand || '(none)'}. Available: create, list, delete, check, init, install, sync, status, orphans, clean, recover`,
 			)
 	}
 }
@@ -419,6 +470,60 @@ function parseWatchIntervalMs(
 	}
 
 	return intervalSeconds * 1000
+}
+
+/**
+ * Parse and validate the `--timeout` flag for detection-aware commands.
+ *
+ * Why: Invalid or non-positive values would either crash or produce a
+ * near-zero timeout that always expires, making detection useless.
+ * Returns undefined when the flag is absent so callers fall back to the
+ * env var or the 5000ms default in detectMergeStatus.
+ *
+ * @param timeoutFlag - Raw flag value from parseArgs
+ * @returns Timeout in milliseconds, or undefined if the flag was not set
+ */
+function parseDetectionTimeoutMs(
+	timeoutFlag: string | boolean | (string | boolean)[] | undefined,
+): number | undefined {
+	if (timeoutFlag === undefined) {
+		return undefined
+	}
+	if (typeof timeoutFlag !== 'string') {
+		fail('Invalid --timeout value: expected a positive integer in milliseconds')
+	}
+	if (!/^\d+$/.test(timeoutFlag)) {
+		fail('Invalid --timeout value: expected a positive integer in milliseconds')
+	}
+	const ms = Number.parseInt(timeoutFlag, 10)
+	if (!Number.isFinite(ms) || ms <= 0) {
+		fail('Invalid --timeout value: expected a positive integer in milliseconds')
+	}
+	return ms
+}
+
+/**
+ * Parse and validate the `--max-age` flag for `worktree recover --cleanup`.
+ *
+ * Why: A non-positive or non-numeric value would silently prune nothing
+ * or everything, which would be very surprising.
+ */
+function parseMaxAgeDays(
+	maxAgeFlag: string | boolean | (string | boolean)[] | undefined,
+): number {
+	if (maxAgeFlag === undefined) return 30
+	if (typeof maxAgeFlag !== 'string') {
+		fail(
+			'Invalid --max-age value: expected a positive integer (number of days)',
+		)
+	}
+	const days = Number.parseInt(maxAgeFlag, 10)
+	if (!Number.isFinite(days) || days < 1) {
+		fail(
+			'Invalid --max-age value: expected a positive integer (number of days)',
+		)
+	}
+	return days
 }
 
 main().catch((error) => {

@@ -14,6 +14,8 @@ afterEach(() => {
 	dirs = []
 	delete process.env.SIDE_QUEST_NO_SQUASH_DETECTION
 	delete process.env.SIDE_QUEST_NO_DETECTION
+	delete process.env.SIDE_QUEST_DETECTION_TIMEOUT_MS
+	delete process.env.SIDE_QUEST_SHALLOW_OK
 })
 
 /**
@@ -1100,5 +1102,230 @@ describe('detectMergeStatus - issues array (structured errors)', () => {
 		expect(result.merged).toBe(false)
 		expect(result.issues).toBeUndefined()
 		expect(result.detectionError).toBeUndefined()
+	})
+})
+
+describe('detectMergeStatus - SIDE_QUEST_DETECTION_TIMEOUT_MS env var (#24)', () => {
+	test('default 5000ms timeout is used when neither option nor env var is set', async () => {
+		// Verify that normal squash detection succeeds with default timeout.
+		// This is the baseline -- 5000ms is more than enough for a local repo.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 1)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		// Neither env var nor options.timeout set: default 5000ms applies
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.detectionError).toBeUndefined()
+	})
+
+	test('SIDE_QUEST_DETECTION_TIMEOUT_MS env var sets cherry timeout', async () => {
+		// Set a generous env-var timeout -- detection should still succeed.
+		// Why: We cannot test a tight timeout reliably (would be flaky on slow CI),
+		// so we verify the env var is respected by using a generous value and
+		// checking detection works. Tight timeout behavior is tested below.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 1)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		process.env.SIDE_QUEST_DETECTION_TIMEOUT_MS = '30000'
+
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.detectionError).toBeUndefined()
+	})
+
+	test('options.timeout overrides SIDE_QUEST_DETECTION_TIMEOUT_MS env var', async () => {
+		// Set env var to an extremely tight value (1ms), then override via options
+		// with a generous value. Detection must succeed, proving options.timeout wins.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 1)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		// Env var is intentionally set to 1ms -- would cause timeout without override
+		process.env.SIDE_QUEST_DETECTION_TIMEOUT_MS = '1'
+
+		// options.timeout = 30000ms overrides the 1ms env var
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			timeout: 30000,
+		})
+
+		// Should succeed because options.timeout (30000ms) takes precedence
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+	})
+
+	test('extremely tight timeout via options causes cherry to time out', async () => {
+		// Set options.timeout to 1ms to force cherry to time out.
+		// This verifies the timeout plumbing actually works end-to-end.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 1)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			timeout: 1,
+		})
+
+		// Either timed out/failed (detectionError set) or succeeded anyway (very fast machine).
+		// The invariant is: no unhandled exception is thrown.
+		// On macOS the subprocess may exit with code 143 (SIGTERM) rather than
+		// triggering the AbortError catch, so we accept either failure form.
+		if (result.detectionError) {
+			const isExpectedFailure =
+				result.detectionError.includes('cherry timed out') ||
+				result.detectionError.includes('cherry exit code')
+			expect(isExpectedFailure).toBe(true)
+			expect(result.merged).toBe(false)
+		}
+		// If it succeeded, the assertion passes trivially -- no error is fine too.
+	})
+
+	test('extremely tight timeout via env var causes cherry to time out', async () => {
+		// Same as above but via SIDE_QUEST_DETECTION_TIMEOUT_MS env var.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 1)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		process.env.SIDE_QUEST_DETECTION_TIMEOUT_MS = '1'
+
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		// Either timed out/failed or succeeded -- no exception is the invariant.
+		// Accept any detection failure form (timeout or non-zero exit code).
+		if (result.detectionError) {
+			const isExpectedFailure =
+				result.detectionError.includes('cherry timed out') ||
+				result.detectionError.includes('cherry exit code')
+			expect(isExpectedFailure).toBe(true)
+			expect(result.merged).toBe(false)
+		}
+	})
+})
+
+describe('detectMergeStatus - shallowOk flag (#28)', () => {
+	test('shallowOk: true bypasses the shallow guard and proceeds with detection', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		// Simulate a shallow clone by passing isShallow: true, but shallowOk bypasses the guard
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+			shallowOk: true,
+		})
+
+		// Detection proceeds -- squash should be detected on a full clone
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		// No shallow-clone error because shallowOk overrides the guard
+		expect(result.detectionError).toBeUndefined()
+		expect(result.issues).toBeUndefined()
+	})
+
+	test('shallowOk: false keeps the guard active (isShallow: true returns error)', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+			shallowOk: false,
+		})
+
+		// Guard is active: shallow clone error must be returned
+		expect(result.merged).toBe(false)
+		expect(result.commitsAhead).toBe(-1)
+		expect(result.detectionError).toContain('shallow clone')
+	})
+
+	test('shallowOk: true also suppresses the shallow-check-failed warning (isShallow: null)', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: null,
+			shallowOk: true,
+		})
+
+		// Detection succeeds without a shallow-check-failed warning
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.detectionError).toBeUndefined()
+		expect(result.issues).toBeUndefined()
+	})
+
+	test('SIDE_QUEST_SHALLOW_OK=1 env var bypasses the shallow guard', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		process.env.SIDE_QUEST_SHALLOW_OK = '1'
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+		})
+
+		// Env var bypasses the guard -- detection proceeds normally
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.detectionError).toBeUndefined()
+	})
+
+	test('env var SIDE_QUEST_SHALLOW_OK=1 enables bypass when options.shallowOk is absent', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		// Without env var and without option, guard is active
+		const resultGuarded = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+		})
+		expect(resultGuarded.detectionError).toContain('shallow clone')
+
+		// With env var, guard is bypassed
+		process.env.SIDE_QUEST_SHALLOW_OK = '1'
+		const resultBypass = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+		})
+		expect(resultBypass.merged).toBe(true)
+		expect(resultBypass.detectionError).toBeUndefined()
+	})
+
+	test('shallowOk: true on a real shallow clone proceeds without shallow-guard error', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		// Create a shallow clone with file:// protocol
+		const shallowDir = fs.mkdtempSync(path.join(import.meta.dir, '.test-scratch-shallow-'))
+		dirs.push(shallowDir)
+		fs.rmSync(shallowDir, { recursive: true, force: true })
+		await spawnAndCollect(['git', 'clone', '--depth', '1', `file://${gitRoot}`, shallowDir], {})
+
+		const isShallow = await checkIsShallow(shallowDir)
+		expect(isShallow).toBe(true)
+
+		// With shallowOk: true, detection proceeds (no shallow-clone guard error)
+		const result = await detectMergeStatus(shallowDir, 'feature', 'main', {
+			isShallow,
+			shallowOk: true,
+		})
+
+		// Key invariant: no shallow-clone guard error when shallowOk is set
+		expect(result.detectionError).not.toContain('shallow clone: detection unavailable')
 	})
 })

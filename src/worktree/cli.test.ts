@@ -198,4 +198,92 @@ describe('worktree CLI', () => {
 		expect(result.exitCode).not.toBe(0)
 		expect(result.stderr).toContain('Invalid --interval value')
 	})
+
+	test('list --timeout: accepts valid millisecond value and succeeds', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'list', '--timeout', '30000'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(Array.isArray(parsed)).toBe(true)
+	})
+
+	test('list --timeout: rejects non-numeric value', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'list', '--timeout', 'abc'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).not.toBe(0)
+		expect(result.stderr).toContain('Invalid --timeout value')
+	})
+
+	test('list --timeout: rejects zero value', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'list', '--timeout', '0'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).not.toBe(0)
+		expect(result.stderr).toContain('Invalid --timeout value')
+	})
+
+	test('check --timeout: accepts valid millisecond value and succeeds', async () => {
+		await spawnAndCollect(
+			[
+				'bun',
+				'run',
+				CLI_PATH,
+				'worktree',
+				'create',
+				'feat/timeout-check',
+				'--no-install',
+				'--no-fetch',
+			],
+			{ cwd: tmpDir },
+		)
+
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'check', 'feat/timeout-check', '--timeout', '30000'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(parsed.exists).toBe(true)
+	})
+
+	test('check --timeout: rejects non-numeric value', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'check', 'feat/any', '--timeout', 'abc'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).not.toBe(0)
+		expect(result.stderr).toContain('Invalid --timeout value')
+	})
+
+	test('orphans --timeout: accepts valid millisecond value and succeeds', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'orphans', '--timeout', '30000'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(Array.isArray(parsed)).toBe(true)
+	})
+
+	test('clean --timeout: accepts valid millisecond value and succeeds', async () => {
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'clean', '--dry-run', '--timeout', '30000'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(parsed.dryRun).toBe(true)
+	})
 })

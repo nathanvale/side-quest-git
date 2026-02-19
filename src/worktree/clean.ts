@@ -26,6 +26,21 @@ export interface CleanOptions {
 	deleteBranches?: boolean
 	/** Also clean orphan branches (branches without worktrees). */
 	includeOrphans?: boolean
+	/**
+	 * Skip the shallow clone guard during merge detection.
+	 *
+	 * Why: CI environments often use shallow clones. Pass this when clone depth
+	 * is known to be sufficient for the branches under inspection.
+	 */
+	shallowOk?: boolean
+	/**
+	 * Override the Layer 3 cherry detection timeout in milliseconds.
+	 *
+	 * Why: Allows callers (e.g. `--timeout` CLI flag) to tune squash detection
+	 * per-run without touching env vars. Precedence: this value >
+	 * SIDE_QUEST_DETECTION_TIMEOUT_MS env var > default 5000ms.
+	 */
+	detectionTimeout?: number
 }
 
 /**
@@ -49,9 +64,14 @@ export async function cleanWorktrees(
 		dryRun = false,
 		deleteBranches = false,
 		includeOrphans = false,
+		shallowOk,
+		detectionTimeout,
 	} = options
 
-	const worktrees = await listWorktrees(gitRoot)
+	const worktrees = await listWorktrees(gitRoot, {
+		shallowOk,
+		detectionTimeout,
+	})
 	const deleted: CleanedWorktree[] = []
 	const skipped: SkippedWorktree[] = []
 
@@ -148,7 +168,10 @@ export async function cleanWorktrees(
 	// Handle orphan branches
 	let orphansDeleted: OrphanBranch[] = []
 	if (includeOrphans) {
-		const orphans = await listOrphanBranches(gitRoot)
+		const orphans = await listOrphanBranches(gitRoot, {
+			shallowOk,
+			detectionTimeout,
+		})
 		const mergedOrphans = force ? orphans : orphans.filter((o) => o.merged)
 
 		if (dryRun) {

@@ -2,6 +2,13 @@
  * Worktree module exports.
  */
 
+export {
+	type BackupRef,
+	cleanupBackupRefs,
+	createBackupRef,
+	listBackupRefs,
+	restoreBackupRef,
+} from './backup.js'
 export { type CleanOptions, cleanWorktrees } from './clean.js'
 export {
 	autoDetectConfig,
@@ -54,5 +61,6 @@ export type {
 	WorktreeInfo,
 	WorktreeStatus,
 } from './types.js'
+export { checkUpstreamGone } from './upstream-gone.js'
 export type { WatchOptions } from './watch.js'
 export { watchWorktreeStatus } from './watch.js'

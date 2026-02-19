@@ -50,6 +50,8 @@ export interface WorktreeInfo {
 	readonly detectionError?: string
 	/** Structured detection issues from the merge detection cascade. */
 	readonly issues?: readonly DetectionIssue[]
+	/** Whether the branch's remote tracking ref has been deleted (e.g. after PR merge). */
+	readonly upstreamGone?: boolean
 }
 
 /** Output from `worktree create`. */
@@ -142,6 +144,8 @@ export interface OrphanBranch {
 	readonly detectionError?: string
 	/** Structured detection issues from the merge detection cascade. */
 	readonly issues?: readonly DetectionIssue[]
+	/** Whether the branch's remote tracking ref has been deleted (e.g. after PR merge). */
+	readonly upstreamGone?: boolean
 }
 
 /** Reason a worktree was skipped during clean. */

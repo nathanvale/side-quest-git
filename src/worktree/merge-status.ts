@@ -121,6 +121,18 @@ export interface DetectionOptions {
 	/** Pre-computed shallow clone status. true = shallow, false = not shallow, null = check failed. */
 	readonly isShallow?: boolean | null
 	/**
+	 * Skip the shallow clone guard and proceed with detection anyway.
+	 *
+	 * Why: CI environments commonly use shallow clones (e.g. `actions/checkout`
+	 * with `fetch-depth: 1`). When the user knows their clone depth is
+	 * sufficient for the branches they care about they can set this flag (or
+	 * the `SIDE_QUEST_SHALLOW_OK=1` env var) to bypass the early-exit guard
+	 * and accept responsibility for any inaccuracies caused by missing history.
+	 *
+	 * Precedence: options.shallowOk > SIDE_QUEST_SHALLOW_OK env var > false
+	 */
+	readonly shallowOk?: boolean
+	/**
 	 * AbortSignal to cancel detection early.
 	 *
 	 * Why: per-item timeouts in list/orphan callers wrap each call with
@@ -215,7 +227,11 @@ export async function detectMergeStatus(
 		}
 	}
 
-	const timeout = options.timeout ?? 5000
+	const envTimeoutMs = process.env.SIDE_QUEST_DETECTION_TIMEOUT_MS
+	const defaultTimeoutMs = 5000
+	const timeout =
+		options.timeout ??
+		(envTimeoutMs !== undefined ? Number(envTimeoutMs) : defaultTimeoutMs)
 	const maxCommitsForSquashDetection =
 		options.maxCommitsForSquashDetection ?? 50
 	const signal = options.signal
@@ -241,8 +257,14 @@ export async function detectMergeStatus(
 		}
 	}
 
-	// Shallow clone guard: skip if squash detection is disabled
-	if (process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1') {
+	// Resolve shallowOk: options.shallowOk takes precedence, then env var.
+	const shallowOk =
+		options.shallowOk === true || process.env.SIDE_QUEST_SHALLOW_OK === '1'
+
+	// Shallow clone guard: skip if squash detection is disabled OR shallowOk is set.
+	// When shallowOk is true the user accepts responsibility for clone depth
+	// being sufficient; we proceed without blocking.
+	if (process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1' && !shallowOk) {
 		if (options.isShallow === true) {
 			const issues: readonly DetectionIssue[] = [
 				createDetectionIssue(
@@ -266,9 +288,11 @@ export async function detectMergeStatus(
 	// Build up a mutable issues array as detection proceeds
 	const issues: DetectionIssue[] = []
 
-	// Shallow-check-failed warning: proceeds with detection but sets a warning
+	// Shallow-check-failed warning: proceeds with detection but sets a warning.
+	// Suppressed when shallowOk is set -- user opted in to proceed regardless.
 	if (
 		process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1' &&
+		!shallowOk &&
 		options.isShallow === null
 	) {
 		issues.push(
