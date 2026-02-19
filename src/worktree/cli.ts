@@ -17,6 +17,7 @@ import { loadOrDetectConfig, writeConfig } from './config.js'
 import { createWorktree } from './create.js'
 import { checkBeforeDelete, deleteWorktree } from './delete.js'
 import { listWorktrees } from './list.js'
+import { computeListHealth, computeOrphanHealth } from './list-health.js'
 import { cleanupStaleTempDirs } from './merge-status.js'
 
 function output(data: unknown): void {
@@ -104,15 +105,28 @@ async function main(): Promise<void> {
 				? worktrees
 				: worktrees.filter((worktree) => !worktree.isMain)
 
+			// Health check against the full (unfiltered) list -- we want to know
+			// whether the enrichment pipeline itself is broken, regardless of the
+			// --all filter. Using the filtered list would miss failures on main.
+			const health = computeListHealth(worktrees)
+
 			if (includeOrphans) {
 				const { listOrphanBranches } = await import('./orphans.js')
 				const orphans = await listOrphanBranches(gitRoot, {
 					detectionTimeout,
 					shallowOk,
 				})
-				output({ worktrees: filtered, orphans })
+				const orphanHealth = computeOrphanHealth(orphans)
+				output({ worktrees: filtered, orphans, health, orphanHealth })
 			} else {
-				output(filtered)
+				output({ worktrees: filtered, health })
+			}
+
+			// Exit non-zero when every worktree enrichment failed -- this signals
+			// a systemic problem (broken git, bad repo state) rather than a
+			// per-entry issue that callers might choose to tolerate.
+			if (health.allFailed) {
+				process.exit(1)
 			}
 			break
 		}
@@ -257,7 +271,14 @@ async function main(): Promise<void> {
 				detectionTimeout,
 				shallowOk,
 			})
-			output(orphans)
+			const orphanHealth = computeOrphanHealth(orphans)
+			output({ orphans, health: orphanHealth })
+
+			// Exit non-zero when every orphan enrichment failed -- same systemic
+			// failure signal as the `list` command.
+			if (orphanHealth.allFailed) {
+				process.exit(1)
+			}
 			break
 		}
 

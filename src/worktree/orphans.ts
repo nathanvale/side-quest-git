@@ -10,6 +10,8 @@
 import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
+import { DEFAULT_CONCURRENCY } from './constants.js'
+import { debugLog } from './debug.js'
 import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import type { OrphanBranch, OrphanStatus } from './types.js'
@@ -68,6 +70,14 @@ export interface ListOrphanBranchesOptions {
 	 * is known to be sufficient for the branches under inspection.
 	 */
 	shallowOk?: boolean
+	/**
+	 * Max branches to process in parallel.
+	 *
+	 * Why: Allows callers to tune git subprocess fan-out per-run without
+	 * touching env vars. Precedence: this value >
+	 * SIDE_QUEST_CONCURRENCY env var > DEFAULT_CONCURRENCY (4).
+	 */
+	concurrency?: number
 }
 
 /**
@@ -125,9 +135,18 @@ export async function listOrphanBranches(
 	// (e.g. huge history, slow disk) should not block the entire chunk.
 	const itemTimeoutMs = Number(process.env.SIDE_QUEST_ITEM_TIMEOUT_MS ?? 10000)
 
-	return processInParallelChunks({
+	const concurrency =
+		options.concurrency ??
+		Number(process.env.SIDE_QUEST_CONCURRENCY ?? DEFAULT_CONCURRENCY)
+
+	const total = orphanCandidates.length
+	let processed = 0
+	let failureCount = 0
+	const enrichStart = Date.now()
+
+	const results = await processInParallelChunks({
 		items: orphanCandidates,
-		chunkSize: 4,
+		chunkSize: concurrency,
 		processor: async (branch) => {
 			const signal = AbortSignal.timeout(itemTimeoutMs)
 
@@ -168,6 +187,9 @@ export async function listOrphanBranches(
 				commitsAhead = -1
 			}
 
+			processed++
+			debugLog('enrichment:progress', { branch, processed, total })
+
 			return {
 				branch,
 				status,
@@ -191,6 +213,14 @@ export async function listOrphanBranches(
 					false,
 				),
 			]
+			processed++
+			failureCount++
+			debugLog('enrichment:error', {
+				branch,
+				error: errorMsg,
+				processed,
+				total,
+			})
 			return {
 				branch,
 				status: 'unknown' as OrphanStatus,
@@ -202,4 +232,12 @@ export async function listOrphanBranches(
 			}
 		},
 	})
+
+	debugLog('enrichment:complete', {
+		total,
+		durationMs: Date.now() - enrichStart,
+		failureCount,
+	})
+
+	return results
 }

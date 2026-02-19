@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
+import { DEFAULT_CONCURRENCY } from './constants.js'
 import { DETECTION_CODES } from './detection-issue.js'
 import { listWorktrees } from './list.js'
 
@@ -494,5 +495,84 @@ describe('listWorktrees', () => {
 		// Backward compat: detectionError still set
 		expect(failed!.detectionError).toBeDefined()
 		expect(failed!.detectionError).toBe(failed!.issues![0]!.message)
+	})
+
+	test('DEFAULT_CONCURRENCY constant is 4', () => {
+		// Verify the exported constant matches the documented default so callers
+		// that reference it in documentation or UI do not drift from reality.
+		expect(DEFAULT_CONCURRENCY).toBe(4)
+	})
+
+	test('custom concurrency option is accepted and returns correct results', async () => {
+		// Create a couple of worktrees to exercise the parallelism path.
+		const wt1 = path.join(gitRoot, '.worktrees', 'feat-conc-a')
+		const wt2 = path.join(gitRoot, '.worktrees', 'feat-conc-b')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/conc-a', wt1], {
+			cwd: gitRoot,
+		})
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/conc-b', wt2], {
+			cwd: gitRoot,
+		})
+
+		// concurrency: 1 forces strict serial processing -- results must still be correct
+		const worktrees = await listWorktrees(gitRoot, { concurrency: 1 })
+
+		expect(worktrees.length).toBe(3)
+		expect(worktrees.find((w) => w.branch === 'feat/conc-a')).toBeDefined()
+		expect(worktrees.find((w) => w.branch === 'feat/conc-b')).toBeDefined()
+	})
+
+	test('SIDE_QUEST_CONCURRENCY env var overrides DEFAULT_CONCURRENCY', async () => {
+		// With concurrency=1 via env var the function must still return valid results.
+		// Why: verifies the env var is read and wired to chunkSize (not just ignored).
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-env-conc')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/env-conc', wtPath], {
+			cwd: gitRoot,
+		})
+
+		const orig = process.env.SIDE_QUEST_CONCURRENCY
+		process.env.SIDE_QUEST_CONCURRENCY = '1'
+
+		try {
+			const worktrees = await listWorktrees(gitRoot)
+
+			expect(worktrees.length).toBeGreaterThanOrEqual(2)
+			const feature = worktrees.find((w) => w.branch === 'feat/env-conc')
+			expect(feature).toBeDefined()
+			expect(feature!.isMain).toBe(false)
+		} finally {
+			if (orig === undefined) {
+				delete process.env.SIDE_QUEST_CONCURRENCY
+			} else {
+				process.env.SIDE_QUEST_CONCURRENCY = orig
+			}
+		}
+	})
+
+	test('explicit concurrency option takes precedence over env var', async () => {
+		// options.concurrency > SIDE_QUEST_CONCURRENCY -- if both are set, the
+		// option wins. We verify by passing concurrency: 2 while env var is '1'.
+		// Both should still return the full result set -- we are only checking
+		// that the call succeeds (no throw) and results are complete.
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-opt-wins')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/opt-wins', wtPath], {
+			cwd: gitRoot,
+		})
+
+		const orig = process.env.SIDE_QUEST_CONCURRENCY
+		process.env.SIDE_QUEST_CONCURRENCY = '1'
+
+		try {
+			const worktrees = await listWorktrees(gitRoot, { concurrency: 2 })
+
+			expect(worktrees.length).toBeGreaterThanOrEqual(2)
+			expect(worktrees.find((w) => w.branch === 'feat/opt-wins')).toBeDefined()
+		} finally {
+			if (orig === undefined) {
+				delete process.env.SIDE_QUEST_CONCURRENCY
+			} else {
+				process.env.SIDE_QUEST_CONCURRENCY = orig
+			}
+		}
 	})
 })

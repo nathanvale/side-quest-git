@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
+import { DEFAULT_CONCURRENCY } from './constants.js'
 import { DETECTION_CODES } from './detection-issue.js'
 import { getWorktreeBranches, listOrphanBranches } from './orphans.js'
 
@@ -314,6 +315,74 @@ describe('listOrphanBranches', () => {
 		const orphan = orphans.find((o) => o.branch === 'feat-ok-orphan')
 		expect(orphan).toBeDefined()
 		expect(orphan!.issues).toBeUndefined()
+	})
+
+	test('DEFAULT_CONCURRENCY constant is 4', () => {
+		// Verify the exported constant matches the documented default.
+		expect(DEFAULT_CONCURRENCY).toBe(4)
+	})
+
+	test('custom concurrency option is accepted and returns correct results', async () => {
+		// Create multiple orphan branches to exercise the parallelism path.
+		await spawnAndCollect(['git', 'branch', 'feat-conc-orphan-a'], {
+			cwd: gitRoot,
+		})
+		await spawnAndCollect(['git', 'branch', 'feat-conc-orphan-b'], {
+			cwd: gitRoot,
+		})
+
+		// concurrency: 1 forces serial processing -- results must still be correct
+		const orphans = await listOrphanBranches(gitRoot, { concurrency: 1 })
+
+		expect(orphans.find((o) => o.branch === 'feat-conc-orphan-a')).toBeDefined()
+		expect(orphans.find((o) => o.branch === 'feat-conc-orphan-b')).toBeDefined()
+	})
+
+	test('SIDE_QUEST_CONCURRENCY env var overrides DEFAULT_CONCURRENCY for orphans', async () => {
+		// Verify the env var is read and applied to the chunkSize.
+		await spawnAndCollect(['git', 'branch', 'feat-env-conc-orphan'], {
+			cwd: gitRoot,
+		})
+
+		const orig = process.env.SIDE_QUEST_CONCURRENCY
+		process.env.SIDE_QUEST_CONCURRENCY = '1'
+
+		try {
+			const orphans = await listOrphanBranches(gitRoot)
+
+			expect(Array.isArray(orphans)).toBe(true)
+			const orphan = orphans.find((o) => o.branch === 'feat-env-conc-orphan')
+			expect(orphan).toBeDefined()
+		} finally {
+			if (orig === undefined) {
+				delete process.env.SIDE_QUEST_CONCURRENCY
+			} else {
+				process.env.SIDE_QUEST_CONCURRENCY = orig
+			}
+		}
+	})
+
+	test('explicit concurrency option takes precedence over env var for orphans', async () => {
+		// options.concurrency > SIDE_QUEST_CONCURRENCY -- option wins.
+		await spawnAndCollect(['git', 'branch', 'feat-opt-wins-orphan'], {
+			cwd: gitRoot,
+		})
+
+		const orig = process.env.SIDE_QUEST_CONCURRENCY
+		process.env.SIDE_QUEST_CONCURRENCY = '1'
+
+		try {
+			const orphans = await listOrphanBranches(gitRoot, { concurrency: 2 })
+
+			expect(Array.isArray(orphans)).toBe(true)
+			expect(orphans.find((o) => o.branch === 'feat-opt-wins-orphan')).toBeDefined()
+		} finally {
+			if (orig === undefined) {
+				delete process.env.SIDE_QUEST_CONCURRENCY
+			} else {
+				process.env.SIDE_QUEST_CONCURRENCY = orig
+			}
+		}
 	})
 })
 

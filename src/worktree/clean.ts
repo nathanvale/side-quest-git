@@ -41,6 +41,14 @@ export interface CleanOptions {
 	 * SIDE_QUEST_DETECTION_TIMEOUT_MS env var > default 5000ms.
 	 */
 	detectionTimeout?: number
+	/**
+	 * Max worktrees/branches to process in parallel during listing.
+	 *
+	 * Why: Allows callers to tune git subprocess fan-out per-run without
+	 * touching env vars. Forwarded to listWorktrees and listOrphanBranches.
+	 * Precedence: this value > SIDE_QUEST_CONCURRENCY env var > DEFAULT_CONCURRENCY (4).
+	 */
+	concurrency?: number
 }
 
 /**
@@ -66,11 +74,13 @@ export async function cleanWorktrees(
 		includeOrphans = false,
 		shallowOk,
 		detectionTimeout,
+		concurrency,
 	} = options
 
 	const worktrees = await listWorktrees(gitRoot, {
 		shallowOk,
 		detectionTimeout,
+		concurrency,
 	})
 	const deleted: CleanedWorktree[] = []
 	const skipped: SkippedWorktree[] = []
@@ -171,6 +181,7 @@ export async function cleanWorktrees(
 		const orphans = await listOrphanBranches(gitRoot, {
 			shallowOk,
 			detectionTimeout,
+			concurrency,
 		})
 		const mergedOrphans = force ? orphans : orphans.filter((o) => o.merged)
 

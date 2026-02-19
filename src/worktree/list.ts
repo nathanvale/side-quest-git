@@ -5,6 +5,8 @@
 import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
+import { DEFAULT_CONCURRENCY } from './constants.js'
+import { debugLog } from './debug.js'
 import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import { buildStatusString } from './status-string.js'
@@ -28,6 +30,14 @@ export interface ListWorktreesOptions {
 	 * is known to be sufficient for the branches under inspection.
 	 */
 	shallowOk?: boolean
+	/**
+	 * Max worktrees to process in parallel.
+	 *
+	 * Why: Allows callers to tune git subprocess fan-out per-run without
+	 * touching env vars. Precedence: this value >
+	 * SIDE_QUEST_CONCURRENCY env var > DEFAULT_CONCURRENCY (4).
+	 */
+	concurrency?: number
 }
 
 /**
@@ -66,12 +76,21 @@ export async function listWorktrees(
 	// net, not a performance target.
 	const itemTimeoutMs = Number(process.env.SIDE_QUEST_ITEM_TIMEOUT_MS ?? 10000)
 
-	return processInParallelChunks({
+	const concurrency =
+		options.concurrency ??
+		Number(process.env.SIDE_QUEST_CONCURRENCY ?? DEFAULT_CONCURRENCY)
+
+	const total = entries.length
+	let processed = 0
+	let failureCount = 0
+	const enrichStart = Date.now()
+
+	const results = await processInParallelChunks({
 		items: [...entries],
-		chunkSize: 4,
+		chunkSize: concurrency,
 		processor: async (entry) => {
 			const signal = AbortSignal.timeout(itemTimeoutMs)
-			return enrichWorktreeInfo(
+			const result = await enrichWorktreeInfo(
 				entry,
 				mainBranch,
 				gitRoot,
@@ -80,6 +99,13 @@ export async function listWorktrees(
 				options.detectionTimeout,
 				options.shallowOk,
 			)
+			processed++
+			debugLog('enrichment:progress', {
+				branch: entry.branch,
+				processed,
+				total,
+			})
+			return result
 		},
 		onError: (entry, error) => {
 			// Compute isMain from raw entry data to preserve safety invariant.
@@ -99,6 +125,14 @@ export async function listWorktrees(
 					false,
 				),
 			]
+			processed++
+			failureCount++
+			debugLog('enrichment:error', {
+				branch: entry.branch,
+				error: errorMsg,
+				processed,
+				total,
+			})
 			return {
 				branch: entry.branch,
 				path: entry.path,
@@ -112,6 +146,14 @@ export async function listWorktrees(
 			} satisfies WorktreeInfo
 		},
 	})
+
+	debugLog('enrichment:complete', {
+		total,
+		durationMs: Date.now() - enrichStart,
+		failureCount,
+	})
+
+	return results
 }
 
 interface RawWorktreeEntry {

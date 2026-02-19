@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
+import { debugLog } from './debug.js'
 import {
 	createDetectionIssue,
 	DETECTION_CODES,
@@ -313,7 +314,18 @@ export async function detectMergeStatus(
 	const branchRef = toLocalBranchRef(branch)
 	const targetRef = toTargetRef(target)
 
+	const detectionStart = Date.now()
+	debugLog('detection:start', {
+		branch,
+		target,
+		timeout,
+		maxCommitsForSquashDetection,
+		shallowOk,
+		isShallow: options.isShallow,
+	})
+
 	// Layer 1: Ancestor check -- thread signal so subprocess terminates on abort
+	const layer1Start = Date.now()
 	const ancestorResult = await spawnAndCollect(
 		['git', 'merge-base', '--is-ancestor', branchRef, targetRef],
 		{ cwd: gitRoot, signal },
@@ -327,7 +339,14 @@ export async function detectMergeStatus(
 			targetRef,
 			signal,
 		)
-		return {
+		const layer1Duration = Date.now() - layer1Start
+		debugLog('layer1:result', {
+			branch,
+			merged: true,
+			mergeBase: 'ancestor',
+			durationMs: layer1Duration,
+		})
+		const result: MergeDetectionResult = {
 			merged: true,
 			mergeMethod: 'ancestor',
 			commitsAhead: counts.ahead,
@@ -339,6 +358,16 @@ export async function detectMergeStatus(
 					}
 				: {}),
 		}
+		debugLog('detection:complete', {
+			branch,
+			merged: result.merged,
+			mergeMethod: result.mergeMethod,
+			commitsAhead: result.commitsAhead,
+			commitsBehind: result.commitsBehind,
+			totalDurationMs: Date.now() - detectionStart,
+			issueCount: issues.length,
+		})
+		return result
 	}
 
 	if (ancestorResult.exitCode >= 128) {
@@ -353,22 +382,52 @@ export async function detectMergeStatus(
 				false,
 			),
 		)
-		return {
+		const layer1Duration = Date.now() - layer1Start
+		debugLog('layer1:result', {
+			branch,
+			merged: false,
+			error: errorMsg,
+			durationMs: layer1Duration,
+		})
+		const result: MergeDetectionResult = {
 			merged: false,
 			commitsAhead: 0,
 			commitsBehind: 0,
 			detectionError: issuestoDetectionError(issues),
 			issues: issues as readonly DetectionIssue[],
 		}
+		debugLog('detection:complete', {
+			branch,
+			merged: result.merged,
+			totalDurationMs: Date.now() - detectionStart,
+			issueCount: issues.length,
+		})
+		return result
 	}
 
+	const layer1Duration = Date.now() - layer1Start
+	debugLog('layer1:result', {
+		branch,
+		merged: false,
+		mergeBase: 'not-ancestor',
+		durationMs: layer1Duration,
+	})
+
 	// Layer 2: Ahead/behind counts (always needed) -- thread signal
+	const layer2Start = Date.now()
 	const counts = await getAheadBehindCounts(
 		gitRoot,
 		branchRef,
 		targetRef,
 		signal,
 	)
+	const layer2Duration = Date.now() - layer2Start
+	debugLog('layer2:result', {
+		branch,
+		commitsAhead: counts.ahead,
+		commitsBehind: counts.behind,
+		durationMs: layer2Duration,
+	})
 
 	// Layer 3: Squash detection (conditional)
 	const shouldCheckSquash =
@@ -380,7 +439,7 @@ export async function detectMergeStatus(
 		// We do NOT add a detectionError here (backward compat: existing callers
 		// rely on detectionError being undefined for the squash-skip path).
 		// The issues array may contain earlier warnings (e.g. shallow-check-failed).
-		return {
+		const result: MergeDetectionResult = {
 			merged: false,
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
@@ -391,6 +450,15 @@ export async function detectMergeStatus(
 					}
 				: {}),
 		}
+		debugLog('detection:complete', {
+			branch,
+			merged: result.merged,
+			commitsAhead: result.commitsAhead,
+			commitsBehind: result.commitsBehind,
+			totalDurationMs: Date.now() - detectionStart,
+			issueCount: issues.length,
+		})
+		return result
 	}
 
 	// Find merge-base for synthetic commit parent -- thread signal
@@ -410,16 +478,25 @@ export async function detectMergeStatus(
 				true,
 			),
 		)
-		return {
+		const result: MergeDetectionResult = {
 			merged: false,
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
 			detectionError: issuestoDetectionError(issues),
 			issues: issues as readonly DetectionIssue[],
 		}
+		debugLog('detection:complete', {
+			branch,
+			merged: result.merged,
+			totalDurationMs: Date.now() - detectionStart,
+			issueCount: issues.length,
+		})
+		return result
 	}
 
 	const mergeBase = mergeBaseResult.stdout.trim()
+
+	debugLog('layer3:start', { branch, target, timeout })
 
 	const objectEnvResult = await createIsolatedObjectEnv(gitRoot, signal)
 	if ('detectionError' in objectEnvResult) {
@@ -432,16 +509,24 @@ export async function detectMergeStatus(
 				true,
 			),
 		)
-		return {
+		const result: MergeDetectionResult = {
 			merged: false,
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
 			detectionError: issuestoDetectionError(issues),
 			issues: issues as readonly DetectionIssue[],
 		}
+		debugLog('detection:complete', {
+			branch,
+			merged: result.merged,
+			totalDurationMs: Date.now() - detectionStart,
+			issueCount: issues.length,
+		})
+		return result
 	}
 
 	const { env: objectEnv, cleanup } = objectEnvResult
+	const layer3Start = Date.now()
 	try {
 		// Create synthetic squash commit with merge-base as parent -- thread signal
 		const commitTreeResult = await spawnAndCollect(
@@ -468,13 +553,20 @@ export async function detectMergeStatus(
 					true,
 				),
 			)
-			return {
+			const result: MergeDetectionResult = {
 				merged: false,
 				commitsAhead: counts.ahead,
 				commitsBehind: counts.behind,
 				detectionError: issuestoDetectionError(issues),
 				issues: issues as readonly DetectionIssue[],
 			}
+			debugLog('detection:complete', {
+				branch,
+				merged: result.merged,
+				totalDurationMs: Date.now() - detectionStart,
+				issueCount: issues.length,
+			})
+			return result
 		}
 
 		const syntheticSha = commitTreeResult.stdout.trim()
@@ -484,6 +576,15 @@ export async function detectMergeStatus(
 		// We use spawnAndCollect directly so our composite signal isn't overwritten
 		// (spawnWithTimeout creates its own internal AbortController and overwrites
 		// the signal option, making it impossible to pass an external signal through).
+		//
+		// Why no batching across branches (issue #25):
+		// `git cherry` accepts exactly one upstream..head pair per invocation --
+		// there is no multi-branch mode. The only potentially batchable step is
+		// `git rev-parse --git-path objects` (the isolated object env setup above),
+		// which saves ~10ms per group. Against a per-branch total of ~60ms this
+		// is <17% -- within noise. `processInParallelChunks` already parallelizes
+		// across branches, so wall time scales with concurrency, not branch count.
+		// Full investigation: src/worktree/benchmarks/cherry-investigation.ts
 		const cherrySignal = signal
 			? AbortSignal.any([signal, AbortSignal.timeout(timeout)])
 			: AbortSignal.timeout(timeout)
@@ -502,6 +603,7 @@ export async function detectMergeStatus(
 		}
 
 		const cherryResult = { ...cherryRaw, timedOut: cherryTimedOut }
+		const layer3Duration = Date.now() - layer3Start
 
 		// Strict fail-closed validation
 		if (
@@ -536,13 +638,27 @@ export async function detectMergeStatus(
 					true,
 				),
 			)
-			return {
+			debugLog('layer3:result', {
+				branch,
+				squashDetected: false,
+				durationMs: layer3Duration,
+				exitCode: cherryResult.exitCode,
+				timedOut: cherryResult.timedOut,
+			})
+			const result: MergeDetectionResult = {
 				merged: false,
 				commitsAhead: counts.ahead,
 				commitsBehind: counts.behind,
 				detectionError: issuestoDetectionError(issues),
 				issues: issues as readonly DetectionIssue[],
 			}
+			debugLog('detection:complete', {
+				branch,
+				merged: result.merged,
+				totalDurationMs: Date.now() - detectionStart,
+				issueCount: issues.length,
+			})
+			return result
 		}
 
 		// Validate cherry output format
@@ -561,21 +677,42 @@ export async function detectMergeStatus(
 						true,
 					),
 				)
-				return {
+				debugLog('layer3:result', {
+					branch,
+					squashDetected: false,
+					durationMs: Date.now() - layer3Start,
+					exitCode: cherryResult.exitCode,
+					error: errorMsg,
+				})
+				const result: MergeDetectionResult = {
 					merged: false,
 					commitsAhead: counts.ahead,
 					commitsBehind: counts.behind,
 					detectionError: issuestoDetectionError(issues),
 					issues: issues as readonly DetectionIssue[],
 				}
+				debugLog('detection:complete', {
+					branch,
+					merged: result.merged,
+					totalDurationMs: Date.now() - detectionStart,
+					issueCount: issues.length,
+				})
+				return result
 			}
 		}
 
 		// Check if all commits are integrated (all lines start with '- ')
 		const allIntegrated = lines.every((line) => line.startsWith('- '))
 
+		debugLog('layer3:result', {
+			branch,
+			squashDetected: allIntegrated,
+			durationMs: layer3Duration,
+			exitCode: cherryResult.exitCode,
+		})
+
 		if (allIntegrated) {
-			return {
+			const result: MergeDetectionResult = {
 				merged: true,
 				mergeMethod: 'squash',
 				commitsAhead: counts.ahead,
@@ -587,12 +724,22 @@ export async function detectMergeStatus(
 						}
 					: {}),
 			}
+			debugLog('detection:complete', {
+				branch,
+				merged: result.merged,
+				mergeMethod: result.mergeMethod,
+				commitsAhead: result.commitsAhead,
+				commitsBehind: result.commitsBehind,
+				totalDurationMs: Date.now() - detectionStart,
+				issueCount: issues.length,
+			})
+			return result
 		}
 	} finally {
 		await cleanup()
 	}
 
-	return {
+	const result: MergeDetectionResult = {
 		merged: false,
 		commitsAhead: counts.ahead,
 		commitsBehind: counts.behind,
@@ -603,6 +750,15 @@ export async function detectMergeStatus(
 				}
 			: {}),
 	}
+	debugLog('detection:complete', {
+		branch,
+		merged: result.merged,
+		commitsAhead: result.commitsAhead,
+		commitsBehind: result.commitsBehind,
+		totalDurationMs: Date.now() - detectionStart,
+		issueCount: issues.length,
+	})
+	return result
 }
 
 interface IsolatedObjectEnv {

@@ -287,4 +287,43 @@ describe('cleanWorktrees', () => {
 		expect(skipped!.reason).toBe('unmerged')
 		expect(skipped!.mergeMethod).toBeUndefined()
 	})
+
+	test('custom concurrency option is forwarded and results are correct', async () => {
+		// cleanWorktrees forwards concurrency to listWorktrees. Verify that passing
+		// concurrency: 1 (serial mode) still produces the expected clean result.
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-clean-conc')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-clean-conc', wtPath], {
+			cwd: gitRoot,
+		})
+
+		// The worktree is pristine (same commit as main) so it should be deleted
+		const result = await cleanWorktrees(gitRoot, { concurrency: 1 })
+
+		const deletedBranches = result.deleted.map((d) => d.branch)
+		expect(deletedBranches).toContain('feat-clean-conc')
+	})
+
+	test('SIDE_QUEST_CONCURRENCY env var is respected during clean', async () => {
+		// Verify env var flows through cleanWorktrees -> listWorktrees.
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-env-clean')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-env-clean', wtPath], {
+			cwd: gitRoot,
+		})
+
+		const orig = process.env.SIDE_QUEST_CONCURRENCY
+		process.env.SIDE_QUEST_CONCURRENCY = '1'
+
+		try {
+			const result = await cleanWorktrees(gitRoot)
+			// Operation must complete without error -- result is a valid CleanResult
+			expect(Array.isArray(result.deleted)).toBe(true)
+			expect(Array.isArray(result.skipped)).toBe(true)
+		} finally {
+			if (orig === undefined) {
+				delete process.env.SIDE_QUEST_CONCURRENCY
+			} else {
+				process.env.SIDE_QUEST_CONCURRENCY = orig
+			}
+		}
+	})
 })

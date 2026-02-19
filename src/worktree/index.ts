@@ -18,8 +18,10 @@ export {
 	loadOrDetectConfig,
 	writeConfig,
 } from './config.js'
+export { DEFAULT_CONCURRENCY } from './constants.js'
 export { copyWorktreeFiles } from './copy-files.js'
 export { createWorktree } from './create.js'
+export { debugLog, isDebugEnabled } from './debug.js'
 export {
 	checkBeforeDelete,
 	type DeleteCheck,
@@ -37,8 +39,17 @@ export {
 } from './detection-issue.js'
 export { getAheadBehindCounts } from './git-counts.js'
 export { runInstall, shouldRunInstall } from './install.js'
-export { listWorktrees } from './list.js'
-export { getWorktreeBranches, listOrphanBranches } from './orphans.js'
+export { type ListWorktreesOptions, listWorktrees } from './list.js'
+export {
+	computeListHealth,
+	computeOrphanHealth,
+	type ListHealthMetadata,
+} from './list-health.js'
+export {
+	getWorktreeBranches,
+	type ListOrphanBranchesOptions,
+	listOrphanBranches,
+} from './orphans.js'
 export type { StatusOptions } from './status.js'
 export { getWorktreeStatus } from './status.js'
 export { buildStatusString, type StatusInput } from './status-string.js'
