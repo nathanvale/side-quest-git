@@ -60,14 +60,25 @@ export async function listOrphanBranches(
 		(branch) => !protectedSet.has(branch) && !worktreeBranches.has(branch),
 	)
 
-	const isShallow = await checkIsShallow(gitRoot)
+	// Skip shallow check when detection is fully disabled -- no git subprocesses
+	// should run at all during an incident (SIDE_QUEST_NO_DETECTION=1).
+	const isShallow =
+		process.env.SIDE_QUEST_NO_DETECTION === '1'
+			? null
+			: await checkIsShallow(gitRoot)
+
+	// Per-item timeout: same safety net as list.ts. A slow branch detection
+	// (e.g. huge history, slow disk) should not block the entire chunk.
+	const itemTimeoutMs = Number(process.env.SIDE_QUEST_ITEM_TIMEOUT_MS ?? 10000)
 
 	return processInParallelChunks({
 		items: orphanCandidates,
 		chunkSize: 4,
 		processor: async (branch) => {
+			const signal = AbortSignal.timeout(itemTimeoutMs)
 			const detection = await detectMergeStatus(gitRoot, branch, mainBranch, {
 				isShallow,
+				signal,
 			})
 
 			let status: OrphanStatus

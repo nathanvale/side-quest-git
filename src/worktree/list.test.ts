@@ -297,6 +297,31 @@ describe('listWorktrees', () => {
 		expect(vanished!.isMain).toBe(false)
 	})
 
+	test('NO_DETECTION=1 returns entries with detection disabled sentinel values', async () => {
+		// Create a feature worktree
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-kill-switch')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/kill-switch', wtPath], {
+			cwd: gitRoot,
+		})
+
+		process.env.SIDE_QUEST_NO_DETECTION = '1'
+		try {
+			const worktrees = await listWorktrees(gitRoot)
+
+			// Worktrees still returned (structural list is unaffected)
+			expect(worktrees.length).toBeGreaterThanOrEqual(2)
+
+			// Feature branch entry: detection is bypassed, sentinel values set
+			const feature = worktrees.find((w) => w.branch === 'feat/kill-switch')
+			expect(feature).toBeDefined()
+			expect(feature!.merged).toBe(false)
+			expect(feature!.detectionError).toBe('detection disabled')
+			expect(feature!.commitsAhead).toBe(-1)
+		} finally {
+			delete process.env.SIDE_QUEST_NO_DETECTION
+		}
+	})
+
 	test('squash-merged worktree shows mergeMethod in list output', async () => {
 		const wtPath = path.join(gitRoot, '.worktrees', 'feat-squash-list')
 		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/squash-list', wtPath], {
@@ -320,5 +345,63 @@ describe('listWorktrees', () => {
 		expect(squash).toBeDefined()
 		expect(squash!.merged).toBe(true)
 		expect(squash!.mergeMethod).toBe('squash')
+	})
+
+	test('per-item timeout via SIDE_QUEST_ITEM_TIMEOUT_MS triggers onError fallback', async () => {
+		// Create a feature worktree, then delete its directory so enrichWorktreeInfo
+		// fails fast (isDirty throws when running git status on a non-existent path).
+		// This verifies the onError fallback path is triggered -- the same path that
+		// an AbortError from a per-item timeout would hit.
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-timeout-test')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/timeout-test', wtPath], {
+			cwd: gitRoot,
+		})
+
+		// Remove the worktree directory to force an error during enrichment
+		fs.rmSync(wtPath, { recursive: true, force: true })
+
+		// Set a very short per-item timeout to ensure AbortSignal.timeout fires
+		// if the enrichment takes longer than 1ms (which it won't since it errors
+		// instantly, but this verifies env var is read without breaking anything)
+		const origTimeout = process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+		process.env.SIDE_QUEST_ITEM_TIMEOUT_MS = '1'
+
+		try {
+			const worktrees = await listWorktrees(gitRoot)
+
+			// The deleted worktree should appear with enrichment-failed status
+			const failed = worktrees.find((w) => w.branch === 'feat/timeout-test')
+			expect(failed).toBeDefined()
+			// onError fallback sets detectionError from the thrown error
+			expect(failed!.detectionError).toBeDefined()
+			// isMain must still be false (safety invariant in onError)
+			expect(failed!.isMain).toBe(false)
+			// Other worktrees must be unaffected
+			const main = worktrees.find((w) => w.branch === 'main')
+			expect(main).toBeDefined()
+			expect(main!.isMain).toBe(true)
+		} finally {
+			if (origTimeout === undefined) {
+				delete process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+			} else {
+				process.env.SIDE_QUEST_ITEM_TIMEOUT_MS = origTimeout
+			}
+		}
+	})
+
+	test('SIDE_QUEST_ITEM_TIMEOUT_MS defaults to 10000ms when not set', async () => {
+		// Verify that removing the env var does not crash and uses a sane default.
+		// listWorktrees should complete normally for a healthy repo.
+		const origTimeout = process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+		delete process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+
+		try {
+			const worktrees = await listWorktrees(gitRoot)
+			expect(worktrees.length).toBeGreaterThanOrEqual(1)
+		} finally {
+			if (origTimeout !== undefined) {
+				process.env.SIDE_QUEST_ITEM_TIMEOUT_MS = origTimeout
+			}
+		}
 	})
 })

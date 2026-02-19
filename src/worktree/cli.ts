@@ -17,6 +17,7 @@ import { loadOrDetectConfig, writeConfig } from './config.js'
 import { createWorktree } from './create.js'
 import { checkBeforeDelete, deleteWorktree } from './delete.js'
 import { listWorktrees } from './list.js'
+import { cleanupStaleTempDirs } from './merge-status.js'
 
 function output(data: unknown): void {
 	console.log(JSON.stringify(data, null, 2))
@@ -28,6 +29,15 @@ function fail(message: string): never {
 }
 
 async function main(): Promise<void> {
+	// Best-effort cleanup of any temp dirs this process created.
+	// The finally block in createIsolatedObjectEnv handles the normal path;
+	// this handler catches SIGTERM (e.g. container shutdown, `kill <pid>`).
+	// Exit code 143 = 128 + 15 (SIGTERM), the POSIX convention.
+	process.on('SIGTERM', () => {
+		cleanupStaleTempDirs()
+		process.exit(143)
+	})
+
 	const { command, subcommand, positional, flags } = parseArgs(
 		process.argv.slice(2),
 	)

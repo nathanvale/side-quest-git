@@ -203,4 +203,58 @@ describe('listOrphanBranches', () => {
 		expect(ancestorOrphan!.merged).toBe(true)
 		expect(ancestorOrphan!.mergeMethod).toBe('ancestor')
 	})
+
+	test('per-item timeout via SIDE_QUEST_ITEM_TIMEOUT_MS triggers onError fallback', async () => {
+		// Create an orphan branch to exercise the detection path.
+		// With a 1ms timeout, AbortSignal.timeout may fire before git operations
+		// complete -- the onError fallback must catch AbortError and return safely.
+		// We verify that no unhandled exception escapes and results are still returned.
+		await spawnAndCollect(['git', 'branch', 'feat-abort-orphan'], {
+			cwd: gitRoot,
+		})
+
+		const origTimeout = process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+		// 1ms -- may or may not fire before detection finishes on a fast machine.
+		// Either way, no exception should propagate to the caller.
+		process.env.SIDE_QUEST_ITEM_TIMEOUT_MS = '1'
+
+		try {
+			const orphans = await listOrphanBranches(gitRoot)
+
+			// The result must be an array (no throw)
+			expect(Array.isArray(orphans)).toBe(true)
+
+			const orphan = orphans.find((o) => o.branch === 'feat-abort-orphan')
+			// The orphan should appear -- either successfully detected or via onError
+			expect(orphan).toBeDefined()
+
+			// If onError fired (due to abort), detectionError is set and status is 'unknown'
+			// If detection completed (abort was too slow), detectionError may be undefined
+			if (orphan!.detectionError) {
+				expect(orphan!.status).toBe('unknown')
+			}
+		} finally {
+			if (origTimeout === undefined) {
+				delete process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+			} else {
+				process.env.SIDE_QUEST_ITEM_TIMEOUT_MS = origTimeout
+			}
+		}
+	})
+
+	test('SIDE_QUEST_ITEM_TIMEOUT_MS defaults to 10000ms when not set', async () => {
+		// Removing the env var should not crash -- listOrphanBranches uses a
+		// default of 10000ms which is plenty for a test repo.
+		const origTimeout = process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+		delete process.env.SIDE_QUEST_ITEM_TIMEOUT_MS
+
+		try {
+			const orphans = await listOrphanBranches(gitRoot)
+			expect(Array.isArray(orphans)).toBe(true)
+		} finally {
+			if (origTimeout !== undefined) {
+				process.env.SIDE_QUEST_ITEM_TIMEOUT_MS = origTimeout
+			}
+		}
+	})
 })

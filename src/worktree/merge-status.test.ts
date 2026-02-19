@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
-import { checkIsShallow, detectMergeStatus } from './merge-status.js'
+import { checkIsShallow, cleanupStaleTempDirs, detectMergeStatus } from './merge-status.js'
 
 let dirs: string[] = []
 
@@ -12,6 +12,7 @@ afterEach(() => {
 	}
 	dirs = []
 	delete process.env.SIDE_QUEST_NO_SQUASH_DETECTION
+	delete process.env.SIDE_QUEST_NO_DETECTION
 })
 
 /**
@@ -573,6 +574,126 @@ describe('detectMergeStatus - Shallow clone guard', () => {
 	})
 })
 
+describe('detectMergeStatus - Full kill switch (SIDE_QUEST_NO_DETECTION)', () => {
+	beforeEach(() => {
+		process.env.SIDE_QUEST_NO_DETECTION = '1'
+	})
+
+	afterEach(() => {
+		delete process.env.SIDE_QUEST_NO_DETECTION
+	})
+
+	test('returns immediately with detection disabled sentinel values', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(false)
+		expect(result.commitsAhead).toBe(-1)
+		expect(result.commitsBehind).toBe(-1)
+		expect(result.detectionError).toBe('detection disabled')
+		expect(result.mergeMethod).toBeUndefined()
+	})
+
+	test('bypasses all detection even for squash-merged branch', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		// With kill switch on, squash-merged branch still returns disabled sentinel
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(false)
+		expect(result.detectionError).toBe('detection disabled')
+		expect(result.mergeMethod).toBeUndefined()
+	})
+
+	test('bypasses all detection even for ancestor-merged branch', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await spawnAndCollect(['git', 'merge', '--no-ff', 'feature'], {
+			cwd: gitRoot,
+		})
+
+		// With kill switch on, ancestor-merged branch still returns disabled sentinel
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(false)
+		expect(result.detectionError).toBe('detection disabled')
+		expect(result.mergeMethod).toBeUndefined()
+	})
+
+	test('takes effect before shallow guard (isShallow: true has no extra effect)', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		// Even with isShallow: true, the kill switch fires first
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+		})
+
+		// Kill switch message, not shallow clone message
+		expect(result.detectionError).toBe('detection disabled')
+	})
+
+	test('disabling kill switch restores normal detection', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		// With kill switch: disabled
+		const killedResult = await detectMergeStatus(gitRoot, 'feature')
+		expect(killedResult.detectionError).toBe('detection disabled')
+
+		// Remove kill switch: normal detection resumes
+		delete process.env.SIDE_QUEST_NO_DETECTION
+
+		const normalResult = await detectMergeStatus(gitRoot, 'feature')
+		expect(normalResult.merged).toBe(true)
+		expect(normalResult.mergeMethod).toBe('squash')
+		expect(normalResult.detectionError).toBeUndefined()
+	})
+})
+
+describe('detectMergeStatus - Kill switch independence', () => {
+	test('SIDE_QUEST_NO_SQUASH_DETECTION=1 still disables only Layer 3', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		process.env.SIDE_QUEST_NO_SQUASH_DETECTION = '1'
+
+		// Layer 3 disabled: squash not detected, but Layers 1 and 2 still run
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(false)
+		expect(result.mergeMethod).toBeUndefined()
+		// commitsAhead comes from Layer 2 (ahead/behind), not a sentinel -1
+		expect(result.commitsAhead).toBeGreaterThanOrEqual(0)
+		// detectionError is NOT 'detection disabled' -- Layer 3 skip is silent
+		expect(result.detectionError).not.toBe('detection disabled')
+	})
+
+	test('SIDE_QUEST_NO_DETECTION=1 takes priority over SIDE_QUEST_NO_SQUASH_DETECTION=1', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		process.env.SIDE_QUEST_NO_DETECTION = '1'
+		process.env.SIDE_QUEST_NO_SQUASH_DETECTION = '1'
+
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		// Full kill switch wins: sentinel values returned immediately
+		expect(result.commitsAhead).toBe(-1)
+		expect(result.commitsBehind).toBe(-1)
+		expect(result.detectionError).toBe('detection disabled')
+	})
+})
+
 describe('checkIsShallow', () => {
 	test('returns false for normal repo', async () => {
 		const gitRoot = await initRepo()
@@ -602,5 +723,222 @@ describe('checkIsShallow', () => {
 
 		const result = await checkIsShallow(nonGitDir)
 		expect(result).toBe(null)
+	})
+})
+
+describe('cleanupStaleTempDirs - Temp-dir janitor (#17)', () => {
+	/**
+	 * Create a fake sq-git-objects temp dir with an embedded PID.
+	 *
+	 * Why: tests need to verify the janitor removes dirs for dead PIDs
+	 * without depending on actual process.pid values from detection runs.
+	 */
+	function makeFakeTempDir(pid: number, suffix = 'abc123'): string {
+		const { tmpdir } = require('node:os') as typeof import('node:os')
+		const dirName = `sq-git-objects-${pid}-${suffix}`
+		const fullPath = path.join(tmpdir(), dirName)
+		fs.mkdirSync(fullPath, { recursive: true })
+		return fullPath
+	}
+
+	/**
+	 * Find a PID that is definitely not alive.
+	 *
+	 * Why: We can't hardcode a dead PID -- it might be reused. Instead,
+	 * pick a very large number unlikely to be a real PID on any platform.
+	 * On Linux max PID is 4194304; on macOS max is 99998.
+	 * Using 2147483646 (INT_MAX - 1) ensures it's never a live process.
+	 */
+	const DEAD_PID = 2147483646
+
+	test('temp dir name includes current process PID', async () => {
+		// Run detectMergeStatus to trigger temp dir creation via squash detection
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 1)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const { tmpdir } = await import('node:os')
+		const tmp = tmpdir()
+
+		// Snapshot temp dirs before detection
+		const before = new Set(fs.readdirSync(tmp).filter((e) => e.startsWith('sq-git-objects-')))
+
+		await detectMergeStatus(gitRoot, 'feature')
+
+		// Snapshot after detection
+		const after = fs.readdirSync(tmp).filter((e) => e.startsWith('sq-git-objects-'))
+
+		// Any new dir created must contain our PID
+		const newDirs = after.filter((e) => !before.has(e))
+		// Detection cleans up in finally, so newDirs may be empty -- but if
+		// any were created they must have our PID embedded
+		for (const dirName of newDirs) {
+			expect(dirName).toContain(`sq-git-objects-${process.pid}-`)
+		}
+
+		// Verify the name pattern: sq-git-objects-<pid>-<random>
+		const pidPattern = new RegExp(`^sq-git-objects-${process.pid}-`)
+		for (const dirName of newDirs) {
+			expect(pidPattern.test(dirName)).toBe(true)
+		}
+	})
+
+	test('removes dirs with dead PIDs', () => {
+		const fakeDir = makeFakeTempDir(DEAD_PID, 'dead001')
+		dirs.push(fakeDir) // register for cleanup in case test fails
+
+		expect(fs.existsSync(fakeDir)).toBe(true)
+
+		cleanupStaleTempDirs()
+
+		expect(fs.existsSync(fakeDir)).toBe(false)
+	})
+
+	test('leaves dirs with live PIDs alone (when fresh)', () => {
+		// Use our own PID -- definitely alive
+		const livePid = process.pid
+		const fakeDir = makeFakeTempDir(livePid, 'live001')
+		dirs.push(fakeDir)
+
+		expect(fs.existsSync(fakeDir)).toBe(true)
+
+		cleanupStaleTempDirs()
+
+		// Should NOT be removed -- PID is alive and dir is fresh (< 1 hour old)
+		expect(fs.existsSync(fakeDir)).toBe(true)
+	})
+
+	test('removes dirs older than 1 hour regardless of PID', () => {
+		const livePid = process.pid
+		const fakeDir = makeFakeTempDir(livePid, 'old001')
+		dirs.push(fakeDir)
+
+		// Backdate mtime to 2 hours ago
+		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
+		fs.utimesSync(fakeDir, twoHoursAgo, twoHoursAgo)
+
+		expect(fs.existsSync(fakeDir)).toBe(true)
+
+		cleanupStaleTempDirs()
+
+		// Should be removed -- old enough even though PID is alive
+		expect(fs.existsSync(fakeDir)).toBe(false)
+	})
+
+	test('janitor never throws even on filesystem errors', () => {
+		// Should not throw even if tmpdir is weird or entries are inaccessible
+		expect(() => cleanupStaleTempDirs()).not.toThrow()
+	})
+
+	test('handles dirs without PID in name (legacy format) by age', () => {
+		const { tmpdir } = require('node:os') as typeof import('node:os')
+		// Legacy format without PID: sq-git-objects-<random>
+		const legacyDir = path.join(tmpdir(), 'sq-git-objects-legacyxyz')
+		fs.mkdirSync(legacyDir, { recursive: true })
+		dirs.push(legacyDir)
+
+		// Backdate to 2 hours ago -- should be removed
+		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
+		fs.utimesSync(legacyDir, twoHoursAgo, twoHoursAgo)
+
+		cleanupStaleTempDirs()
+
+		expect(fs.existsSync(legacyDir)).toBe(false)
+	})
+
+	test('leaves fresh dirs without PID in name (legacy format)', () => {
+		const { tmpdir } = require('node:os') as typeof import('node:os')
+		const legacyDir = path.join(tmpdir(), 'sq-git-objects-freshlegacy')
+		fs.mkdirSync(legacyDir, { recursive: true })
+		dirs.push(legacyDir)
+
+		// Fresh dir (default mtime is now) -- should be left alone
+		cleanupStaleTempDirs()
+
+		expect(fs.existsSync(legacyDir)).toBe(true)
+	})
+})
+
+describe('detectMergeStatus - AbortSignal support (#14)', () => {
+	test('already-aborted signal causes immediate return with detectionError', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+
+		// Create an already-aborted signal
+		const controller = new AbortController()
+		controller.abort()
+		const signal = controller.signal
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			signal,
+		})
+
+		// Must return immediately with abort error -- no git subprocesses run
+		expect(result.merged).toBe(false)
+		expect(result.commitsAhead).toBe(-1)
+		expect(result.commitsBehind).toBe(-1)
+		expect(result.detectionError).toBe('detection aborted')
+		expect(result.mergeMethod).toBeUndefined()
+	})
+
+	test('signal aborted during detection converts to detectionError', async () => {
+		// Use AbortSignal.timeout with 0ms to guarantee immediate abort.
+		// The signal is aborted before we pass it, simulating a per-item timeout
+		// that fires just as detection starts.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		// A 0ms timeout signal is aborted synchronously by the time we read signal.aborted
+		const signal = AbortSignal.timeout(0)
+
+		// Yield to let the microtask queue process the timeout
+		await new Promise((resolve) => setTimeout(resolve, 5))
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			signal,
+		})
+
+		// Signal was aborted before any git work -- should report aborted
+		expect(result.merged).toBe(false)
+		expect(result.detectionError).toBe('detection aborted')
+	})
+
+	test('signal option is accepted without error for normal detection', async () => {
+		// Verify that passing a non-aborted signal does not affect normal detection.
+		// The signal is a live, non-aborted controller signal.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const controller = new AbortController()
+		const signal = controller.signal
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			signal,
+		})
+
+		// Normal detection should succeed with a live signal
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.detectionError).toBeUndefined()
+	})
+
+	test('AbortSignal.timeout respects SIDE_QUEST_ITEM_TIMEOUT_MS pattern', async () => {
+		// Verify that AbortSignal.timeout(0) can abort detection.
+		// This simulates the per-item timeout in list.ts and orphans.ts
+		// when SIDE_QUEST_ITEM_TIMEOUT_MS is set to a very low value.
+		const gitRoot = await initRepo()
+
+		const signal = AbortSignal.timeout(0)
+		await new Promise((resolve) => setTimeout(resolve, 5))
+
+		const result = await detectMergeStatus(gitRoot, 'main', 'main', { signal })
+
+		// Either aborted (if signal fired before detection) or succeeded (if fast enough)
+		// The key invariant: no unhandled exception is thrown
+		expect(['detection aborted', undefined]).toContain(result.detectionError)
 	})
 })

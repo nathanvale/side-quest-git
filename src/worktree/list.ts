@@ -22,13 +22,26 @@ export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
 
 	const entries = parsePorcelainOutput(result.stdout)
 	const mainBranch = await getMainBranch(gitRoot)
-	const isShallow = await checkIsShallow(gitRoot)
+	// Skip shallow check when detection is fully disabled -- no git subprocesses
+	// should run at all during an incident (SIDE_QUEST_NO_DETECTION=1).
+	const isShallow =
+		process.env.SIDE_QUEST_NO_DETECTION === '1'
+			? null
+			: await checkIsShallow(gitRoot)
+
+	// Per-item timeout: cap how long a single enrichWorktreeInfo call may run.
+	// A hung git process (e.g. in a network-mounted repo) would otherwise block
+	// the entire chunk. The timeout is intentionally generous -- it is a safety
+	// net, not a performance target.
+	const itemTimeoutMs = Number(process.env.SIDE_QUEST_ITEM_TIMEOUT_MS ?? 10000)
 
 	return processInParallelChunks({
 		items: [...entries],
 		chunkSize: 4,
-		processor: async (entry) =>
-			enrichWorktreeInfo(entry, mainBranch, gitRoot, isShallow),
+		processor: async (entry) => {
+			const signal = AbortSignal.timeout(itemTimeoutMs)
+			return enrichWorktreeInfo(entry, mainBranch, gitRoot, isShallow, signal)
+		},
 		onError: (entry, error) => {
 			// Compute isMain from raw entry data to preserve safety invariant.
 			// cleanWorktrees trusts isMain to guard against deleting the main worktree.
@@ -100,6 +113,7 @@ async function enrichWorktreeInfo(
 	mainBranch: string,
 	gitRoot: string,
 	isShallow: boolean | null,
+	signal?: AbortSignal,
 ): Promise<WorktreeInfo> {
 	const isMain =
 		entry.isBare ||
@@ -122,6 +136,7 @@ async function enrichWorktreeInfo(
 
 	const detection = await detectMergeStatus(gitRoot, entry.branch, mainBranch, {
 		isShallow,
+		signal,
 	})
 
 	const status = buildStatusString({

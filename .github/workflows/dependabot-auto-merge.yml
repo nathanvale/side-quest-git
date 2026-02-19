@@ -42,10 +42,10 @@ jobs:
               'yarn.lock',
               'bun.lock',
             ]
-            const isGHA = filenames.every(f => f.startsWith('.github/'))
-            const isDeps = filenames.every(f => allowed.includes(f))
-            if (!isGHA && !isDeps) {
-              core.setFailed('PR touches files outside dependency manifests and .github/')
+            const safe = filenames.every(f => f.startsWith('.github/') || allowed.includes(f))
+            if (!safe) {
+              const unsafe = filenames.filter(f => !f.startsWith('.github/') && !allowed.includes(f))
+              core.setFailed(`PR touches files outside dependency manifests and .github/: ${unsafe.join(', ')}`)
             }
       - name: Enable auto-merge for minor/patch dependency updates
         if: steps.diff.outcome == 'success' && steps.labels.outcome == 'success'
