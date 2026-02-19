@@ -6,6 +6,8 @@
  * @module worktree/types
  */
 
+import type { DetectionIssue } from './detection-issue.js'
+
 /** Schema for `.worktrees.json` config file at repo root. */
 export interface WorktreeConfig {
 	/** Directory where worktrees are created, relative to repo root. */
@@ -38,12 +40,16 @@ export interface WorktreeInfo {
 	readonly isMain: boolean
 	/** Number of commits ahead of the main branch. */
 	readonly commitsAhead?: number
+	/** Number of commits behind the main branch. */
+	readonly commitsBehind?: number
 	/** Method by which the branch was integrated (if merged). */
 	readonly mergeMethod?: MergeMethod
 	/** Status summary string. */
 	readonly status?: string
-	/** Detection error or warning message. */
+	/** Detection error or warning message. @deprecated Use issues instead. */
 	readonly detectionError?: string
+	/** Structured detection issues from the merge detection cascade. */
+	readonly issues?: readonly DetectionIssue[]
 }
 
 /** Output from `worktree create`. */
@@ -72,6 +78,8 @@ export interface DeleteResult {
 	readonly path: string
 	/** Whether the git branch was also deleted. */
 	readonly branchDeleted: boolean
+	/** Method by which the branch was integrated (if merged before deletion). */
+	readonly mergeMethod?: MergeMethod
 }
 
 /** Output from `worktree install`. */
@@ -130,8 +138,10 @@ export interface OrphanBranch {
 	readonly merged: boolean
 	/** Method by which the branch was integrated (if merged). */
 	readonly mergeMethod?: MergeMethod
-	/** Detection error or warning message. */
+	/** Detection error or warning message. @deprecated Use issues instead. */
 	readonly detectionError?: string
+	/** Structured detection issues from the merge detection cascade. */
+	readonly issues?: readonly DetectionIssue[]
 }
 
 /** Reason a worktree was skipped during clean. */
@@ -200,6 +210,8 @@ export interface WorktreeStatus {
 	readonly lastCommitAt: string | null
 	/** Subject line of the last commit, or null if no commits. */
 	readonly lastCommitMessage: string | null
+	/** Method by which the branch was integrated (if merged). */
+	readonly mergeMethod?: MergeMethod
 	/** Pull request info, or null if not fetched or no PR exists. */
 	readonly pr: PullRequestInfo | null
 }

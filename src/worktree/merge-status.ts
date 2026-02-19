@@ -20,6 +20,12 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
+import {
+	createDetectionIssue,
+	DETECTION_CODES,
+	type DetectionIssue,
+} from './detection-issue.js'
+import { getAheadBehindCounts } from './git-counts.js'
 import type { MergeMethod } from './types.js'
 
 /**
@@ -97,7 +103,15 @@ export interface MergeDetectionResult {
 	readonly mergeMethod?: MergeMethod
 	readonly commitsAhead: number
 	readonly commitsBehind: number
+	/**
+	 * Human-readable error/warning message.
+	 *
+	 * @deprecated Prefer `issues` for structured access. This field is computed
+	 * from the first error-severity issue, or the first issue of any severity.
+	 */
 	readonly detectionError?: string
+	/** Structured detection issues from the merge detection cascade. */
+	readonly issues?: readonly DetectionIssue[]
 }
 
 /** Options for merge detection. */
@@ -129,6 +143,25 @@ export async function checkIsShallow(gitRoot: string): Promise<boolean | null> {
 	)
 	if (result.exitCode !== 0) return null
 	return result.stdout.trim() === 'true'
+}
+
+/**
+ * Derive the backward-compatible `detectionError` string from an issues array.
+ *
+ * Why: The legacy field is computed from the first error-severity issue message,
+ * or the first issue of any severity if none are errors. This preserves the
+ * existing contract while letting callers migrate to structured issues.
+ *
+ * @param issues - Structured detection issues array
+ * @returns The human-readable error string, or undefined if no issues
+ */
+function issuestoDetectionError(
+	issues: readonly DetectionIssue[],
+): string | undefined {
+	if (issues.length === 0) return undefined
+	return (
+		issues.find((i) => i.severity === 'error')?.message ?? issues[0]!.message
+	)
 }
 
 /**
@@ -164,11 +197,21 @@ export async function detectMergeStatus(
 	// failures. For targeted Layer 3 disable only, use
 	// SIDE_QUEST_NO_SQUASH_DETECTION=1 instead (backward compat preserved).
 	if (process.env.SIDE_QUEST_NO_DETECTION === '1') {
+		const issues: readonly DetectionIssue[] = [
+			createDetectionIssue(
+				DETECTION_CODES.DETECTION_DISABLED,
+				'warning',
+				'kill-switch',
+				'detection disabled',
+				false,
+			),
+		]
 		return {
 			merged: false,
 			commitsAhead: -1,
 			commitsBehind: -1,
-			detectionError: 'detection disabled',
+			detectionError: issuestoDetectionError(issues),
+			issues,
 		}
 	}
 
@@ -180,31 +223,64 @@ export async function detectMergeStatus(
 	// Early-exit if the caller's signal is already aborted before any git work.
 	// This prevents spawning subprocesses that would be immediately killed.
 	if (signal?.aborted) {
+		const issues: readonly DetectionIssue[] = [
+			createDetectionIssue(
+				DETECTION_CODES.CHERRY_TIMEOUT,
+				'warning',
+				'layer3-cherry',
+				'detection aborted',
+				false,
+			),
+		]
 		return {
 			merged: false,
 			commitsAhead: -1,
 			commitsBehind: -1,
-			detectionError: 'detection aborted',
+			detectionError: issuestoDetectionError(issues),
+			issues,
 		}
 	}
 
 	// Shallow clone guard: skip if squash detection is disabled
 	if (process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1') {
 		if (options.isShallow === true) {
+			const issues: readonly DetectionIssue[] = [
+				createDetectionIssue(
+					DETECTION_CODES.SHALLOW_CLONE,
+					'error',
+					'shallow-guard',
+					'shallow clone: detection unavailable',
+					false,
+				),
+			]
 			return {
 				merged: false,
 				commitsAhead: -1,
 				commitsBehind: -1,
-				detectionError: 'shallow clone: detection unavailable',
+				detectionError: issuestoDetectionError(issues),
+				issues,
 			}
 		}
 	}
 
-	const shallowWarning =
+	// Build up a mutable issues array as detection proceeds
+	const issues: DetectionIssue[] = []
+
+	// Shallow-check-failed warning: proceeds with detection but sets a warning
+	if (
 		process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1' &&
 		options.isShallow === null
-			? 'shallow check failed: proceeding with detection'
-			: undefined
+	) {
+		issues.push(
+			createDetectionIssue(
+				DETECTION_CODES.SHALLOW_CHECK_FAILED,
+				'warning',
+				'shallow-guard',
+				'shallow check failed: proceeding with detection',
+				true,
+			),
+		)
+	}
 
 	// Resolve target branch if not provided
 	const target = targetBranch ?? (await getMainBranch(gitRoot))
@@ -232,17 +308,33 @@ export async function detectMergeStatus(
 			mergeMethod: 'ancestor',
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
-			...(shallowWarning ? { detectionError: shallowWarning } : {}),
+			...(issues.length > 0
+				? {
+						detectionError: issuestoDetectionError(issues),
+						issues: issues as readonly DetectionIssue[],
+					}
+				: {}),
 		}
 	}
 
 	if (ancestorResult.exitCode >= 128) {
 		// Fatal error (invalid ref, etc)
+		const errorMsg = `merge-base failed: ${ancestorResult.stderr.trim()}`
+		issues.push(
+			createDetectionIssue(
+				DETECTION_CODES.MERGE_BASE_FAILED,
+				'error',
+				'layer1',
+				errorMsg,
+				false,
+			),
+		)
 		return {
 			merged: false,
 			commitsAhead: 0,
 			commitsBehind: 0,
-			detectionError: `merge-base failed: ${ancestorResult.stderr.trim()}`,
+			detectionError: issuestoDetectionError(issues),
+			issues: issues as readonly DetectionIssue[],
 		}
 	}
 
@@ -260,11 +352,20 @@ export async function detectMergeStatus(
 		counts.ahead <= maxCommitsForSquashDetection
 
 	if (!shouldCheckSquash) {
+		// Note: when NO_SQUASH_DETECTION=1, squash detection is silently skipped.
+		// We do NOT add a detectionError here (backward compat: existing callers
+		// rely on detectionError being undefined for the squash-skip path).
+		// The issues array may contain earlier warnings (e.g. shallow-check-failed).
 		return {
 			merged: false,
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
-			...(shallowWarning ? { detectionError: shallowWarning } : {}),
+			...(issues.length > 0
+				? {
+						detectionError: issuestoDetectionError(issues),
+						issues: issues as readonly DetectionIssue[],
+					}
+				: {}),
 		}
 	}
 
@@ -275,11 +376,22 @@ export async function detectMergeStatus(
 	)
 
 	if (mergeBaseResult.exitCode !== 0) {
+		const errorMsg = `merge-base lookup failed: ${mergeBaseResult.stderr.trim()}`
+		issues.push(
+			createDetectionIssue(
+				DETECTION_CODES.MERGE_BASE_LOOKUP_FAILED,
+				'warning',
+				'layer2',
+				errorMsg,
+				true,
+			),
+		)
 		return {
 			merged: false,
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
-			detectionError: `merge-base lookup failed: ${mergeBaseResult.stderr.trim()}`,
+			detectionError: issuestoDetectionError(issues),
+			issues: issues as readonly DetectionIssue[],
 		}
 	}
 
@@ -287,11 +399,21 @@ export async function detectMergeStatus(
 
 	const objectEnvResult = await createIsolatedObjectEnv(gitRoot, signal)
 	if ('detectionError' in objectEnvResult) {
+		issues.push(
+			createDetectionIssue(
+				DETECTION_CODES.GIT_PATH_FAILED,
+				'warning',
+				'layer3-cherry',
+				objectEnvResult.detectionError,
+				true,
+			),
+		)
 		return {
 			merged: false,
 			commitsAhead: counts.ahead,
 			commitsBehind: counts.behind,
-			detectionError: objectEnvResult.detectionError,
+			detectionError: issuestoDetectionError(issues),
+			issues: issues as readonly DetectionIssue[],
 		}
 	}
 
@@ -312,11 +434,22 @@ export async function detectMergeStatus(
 		)
 
 		if (commitTreeResult.exitCode !== 0) {
+			const errorMsg = `commit-tree failed: ${commitTreeResult.stderr.trim()}`
+			issues.push(
+				createDetectionIssue(
+					DETECTION_CODES.COMMIT_TREE_FAILED,
+					'warning',
+					'layer3-commit-tree',
+					errorMsg,
+					true,
+				),
+			)
 			return {
 				merged: false,
 				commitsAhead: counts.ahead,
 				commitsBehind: counts.behind,
-				detectionError: `commit-tree failed: ${commitTreeResult.stderr.trim()}`,
+				detectionError: issuestoDetectionError(issues),
+				issues: issues as readonly DetectionIssue[],
 			}
 		}
 
@@ -352,16 +485,39 @@ export async function detectMergeStatus(
 			cherryResult.exitCode !== 0 ||
 			!cherryResult.stdout.trim()
 		) {
-			const reason = cherryResult.timedOut
-				? 'timed out'
-				: cherryResult.exitCode !== 0
-					? `exit code ${cherryResult.exitCode}`
-					: 'empty output'
+			let cherryCode: string
+			let cherryMsg: string
+
+			if (cherryResult.timedOut) {
+				// Distinguish between abort from external signal vs local timeout
+				const isAbort = signal?.aborted
+				cherryCode = DETECTION_CODES.CHERRY_TIMEOUT
+				cherryMsg = isAbort
+					? `cherry aborted: ${signal?.reason ?? 'signal aborted'}`
+					: 'cherry timed out'
+			} else if (cherryResult.exitCode !== 0) {
+				cherryCode = DETECTION_CODES.CHERRY_FAILED
+				cherryMsg = `cherry exit code ${cherryResult.exitCode}`
+			} else {
+				cherryCode = DETECTION_CODES.CHERRY_EMPTY
+				cherryMsg = 'cherry empty output'
+			}
+
+			issues.push(
+				createDetectionIssue(
+					cherryCode,
+					'warning',
+					'layer3-cherry',
+					cherryMsg,
+					true,
+				),
+			)
 			return {
 				merged: false,
 				commitsAhead: counts.ahead,
 				commitsBehind: counts.behind,
-				detectionError: `cherry ${reason}`,
+				detectionError: issuestoDetectionError(issues),
+				issues: issues as readonly DetectionIssue[],
 			}
 		}
 
@@ -371,11 +527,22 @@ export async function detectMergeStatus(
 
 		for (const line of lines) {
 			if (!cherryLinePattern.test(line)) {
+				const errorMsg = `cherry output invalid: ${line}`
+				issues.push(
+					createDetectionIssue(
+						DETECTION_CODES.CHERRY_INVALID,
+						'warning',
+						'layer3-cherry',
+						errorMsg,
+						true,
+					),
+				)
 				return {
 					merged: false,
 					commitsAhead: counts.ahead,
 					commitsBehind: counts.behind,
-					detectionError: `cherry output invalid: ${line}`,
+					detectionError: issuestoDetectionError(issues),
+					issues: issues as readonly DetectionIssue[],
 				}
 			}
 		}
@@ -389,7 +556,12 @@ export async function detectMergeStatus(
 				mergeMethod: 'squash',
 				commitsAhead: counts.ahead,
 				commitsBehind: counts.behind,
-				...(shallowWarning ? { detectionError: shallowWarning } : {}),
+				...(issues.length > 0
+					? {
+							detectionError: issuestoDetectionError(issues),
+							issues: issues as readonly DetectionIssue[],
+						}
+					: {}),
 			}
 		}
 	} finally {
@@ -400,7 +572,12 @@ export async function detectMergeStatus(
 		merged: false,
 		commitsAhead: counts.ahead,
 		commitsBehind: counts.behind,
-		...(shallowWarning ? { detectionError: shallowWarning } : {}),
+		...(issues.length > 0
+			? {
+					detectionError: issuestoDetectionError(issues),
+					issues: issues as readonly DetectionIssue[],
+				}
+			: {}),
 	}
 }
 
@@ -484,49 +661,5 @@ async function createIsolatedObjectEnv(
 		cleanup: async () => {
 			await rm(isolatedDir, { recursive: true, force: true })
 		},
-	}
-}
-
-/**
- * Get ahead/behind commit counts between two refs.
- *
- * @param gitRoot - Absolute path to git repository root
- * @param branchRef - Fully qualified branch ref
- * @param targetRef - Fully qualified target ref
- * @param signal - Optional AbortSignal to cancel the git subprocess
- * @returns Ahead and behind commit counts
- */
-async function getAheadBehindCounts(
-	gitRoot: string,
-	branchRef: string,
-	targetRef: string,
-	signal?: AbortSignal,
-): Promise<{ ahead: number; behind: number }> {
-	const countResult = await spawnAndCollect(
-		[
-			'git',
-			'rev-list',
-			'--count',
-			'--left-right',
-			`${branchRef}...${targetRef}`,
-		],
-		{ cwd: gitRoot, signal },
-	)
-
-	if (countResult.exitCode !== 0) {
-		return { ahead: 0, behind: 0 }
-	}
-
-	const parts = countResult.stdout.trim().split('\t')
-	if (parts.length !== 2 || !parts[0] || !parts[1]) {
-		return { ahead: 0, behind: 0 }
-	}
-
-	const ahead = Number.parseInt(parts[0], 10)
-	const behind = Number.parseInt(parts[1], 10)
-
-	return {
-		ahead: Number.isNaN(ahead) ? 0 : ahead,
-		behind: Number.isNaN(behind) ? 0 : behind,
 	}
 }

@@ -5,6 +5,7 @@
 import path from 'node:path'
 import { shellExec, spawnAndCollect } from '@side-quest/core/spawn'
 import { loadOrDetectConfig } from './config.js'
+import type { DetectionIssue } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import { buildStatusString } from './status-string.js'
 import type { DeleteResult, MergeMethod } from './types.js'
@@ -19,8 +20,27 @@ export interface DeleteCheck {
 	readonly commitsAhead?: number
 	readonly mergeMethod?: MergeMethod
 	readonly status?: string
+	/**
+	 * Human-readable detection error or warning message.
+	 *
+	 * @deprecated Prefer `issues` for structured access.
+	 */
+	readonly detectionError?: string
+	/** Structured detection issues from the merge detection cascade. */
+	readonly issues?: readonly DetectionIssue[]
 }
 
+/**
+ * Check merge and dirty status for a worktree before deletion.
+ *
+ * Why: Gives callers a non-destructive way to inspect a worktree's state
+ * (merged, dirty, commitsAhead, mergeMethod) before deciding whether to
+ * call deleteWorktree. Used by the `worktree check` CLI subcommand.
+ *
+ * @param gitRoot - Main worktree root
+ * @param branchName - Branch name of the worktree to check
+ * @returns Status snapshot including existence, dirty, merged, and mergeMethod
+ */
 export async function checkBeforeDelete(
 	gitRoot: string,
 	branchName: string,
@@ -75,9 +95,25 @@ export async function checkBeforeDelete(
 		commitsAhead: detection.commitsAhead,
 		mergeMethod: detection.mergeMethod,
 		status,
+		...(detection.detectionError !== undefined
+			? { detectionError: detection.detectionError }
+			: {}),
+		...(detection.issues !== undefined ? { issues: detection.issues } : {}),
 	}
 }
 
+/**
+ * Delete a worktree by branch name.
+ *
+ * Why: Runs merge detection before removal so the `worktree.deleted` event
+ * payload carries `mergeMethod`, enabling downstream consumers (dashboards,
+ * audit logs) to know how the branch was integrated without a separate check.
+ *
+ * @param gitRoot - Main worktree root
+ * @param branchName - Branch name of the worktree to delete
+ * @param options - Deletion options (force, deleteBranch)
+ * @returns Delete result with branch, path, branchDeleted, and mergeMethod
+ */
 export async function deleteWorktree(
 	gitRoot: string,
 	branchName: string,
@@ -86,6 +122,13 @@ export async function deleteWorktree(
 	const { config } = loadOrDetectConfig(gitRoot)
 	const sanitizedBranch = branchName.replace(/\//g, '-')
 	const worktreePath = path.join(gitRoot, config.directory, sanitizedBranch)
+
+	// Detect merge status before removal so mergeMethod is available in the
+	// event payload. Best-effort: if detection fails we proceed with undefined.
+	const isShallow = await checkIsShallow(gitRoot)
+	const detection = await detectMergeStatus(gitRoot, branchName, undefined, {
+		isShallow,
+	})
 
 	if (config.preDelete) {
 		await runPreDelete(config.preDelete, worktreePath)
@@ -117,6 +160,9 @@ export async function deleteWorktree(
 		branch: branchName,
 		path: worktreePath,
 		branchDeleted,
+		...(detection.mergeMethod !== undefined
+			? { mergeMethod: detection.mergeMethod }
+			: {}),
 	}
 }
 

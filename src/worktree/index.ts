@@ -23,9 +23,15 @@ export {
 	detectLockfile,
 	detectPackageManager,
 } from './detect-pm.js'
+export {
+	createDetectionIssue,
+	DETECTION_CODES,
+	type DetectionIssue,
+} from './detection-issue.js'
+export { getAheadBehindCounts } from './git-counts.js'
 export { runInstall, shouldRunInstall } from './install.js'
 export { listWorktrees } from './list.js'
-export { listOrphanBranches } from './orphans.js'
+export { getWorktreeBranches, listOrphanBranches } from './orphans.js'
 export type { StatusOptions } from './status.js'
 export { getWorktreeStatus } from './status.js'
 export { buildStatusString, type StatusInput } from './status-string.js'

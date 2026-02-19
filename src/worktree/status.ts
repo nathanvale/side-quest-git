@@ -11,6 +11,7 @@ import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { safeJsonParse } from '@side-quest/core/utils'
 import { getMainBranch } from '../git/main-branch.js'
+import { getAheadBehindCounts } from './git-counts.js'
 import { listWorktrees } from './list.js'
 import type { PullRequestInfo, WorktreeStatus } from './types.js'
 
@@ -42,7 +43,9 @@ export async function getWorktreeStatus(
 		chunkSize: concurrency,
 		processor: async (wt) => {
 			const [aheadBehind, lastCommit, pr] = await Promise.all([
-				getAheadBehind(wt.path, wt.branch, wt.isMain, mainBranch),
+				wt.isMain || wt.branch === '(detached)'
+					? Promise.resolve({ ahead: 0, behind: 0 })
+					: getAheadBehindCounts(wt.path, wt.branch, mainBranch),
 				getLastCommit(wt.path),
 				includePr ? getPrInfo(wt.branch, gitRoot) : Promise.resolve(null),
 			])
@@ -56,52 +59,11 @@ export async function getWorktreeStatus(
 				commitsBehind: aheadBehind.behind,
 				lastCommitAt: lastCommit.at,
 				lastCommitMessage: lastCommit.message,
+				mergeMethod: wt.mergeMethod,
 				pr,
 			} satisfies WorktreeStatus
 		},
 	})
-}
-
-interface AheadBehind {
-	readonly ahead: number
-	readonly behind: number
-}
-
-/**
- * Count commits ahead/behind between a branch and main.
- *
- * Uses `git rev-list --count --left-right` to get both counts in a
- * single call. Returns zeros for main branches or on any failure
- * (e.g., no upstream tracking).
- */
-async function getAheadBehind(
-	worktreePath: string,
-	branch: string,
-	isMain: boolean,
-	mainBranch: string,
-): Promise<AheadBehind> {
-	if (isMain || branch === '(detached)') {
-		return { ahead: 0, behind: 0 }
-	}
-
-	const result = await spawnAndCollect(
-		['git', 'rev-list', '--count', '--left-right', `${branch}...${mainBranch}`],
-		{ cwd: worktreePath },
-	)
-
-	if (result.exitCode !== 0) {
-		return { ahead: 0, behind: 0 }
-	}
-
-	const parts = result.stdout.trim().split('\t')
-	if (parts.length !== 2) {
-		return { ahead: 0, behind: 0 }
-	}
-
-	return {
-		ahead: Number.parseInt(parts[0]!, 10) || 0,
-		behind: Number.parseInt(parts[1]!, 10) || 0,
-	}
 }
 
 interface LastCommit {

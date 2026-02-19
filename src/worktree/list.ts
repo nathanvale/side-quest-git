@@ -5,6 +5,7 @@
 import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
+import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import { buildStatusString } from './status-string.js'
 import type { WorktreeInfo } from './types.js'
@@ -50,6 +51,16 @@ export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
 				entry.branch === mainBranch ||
 				entry.branch === 'main' ||
 				entry.branch === 'master'
+			const errorMsg = error instanceof Error ? error.message : String(error)
+			const issues = [
+				createDetectionIssue(
+					DETECTION_CODES.ENRICHMENT_FAILED,
+					'error',
+					'enrichment',
+					errorMsg,
+					false,
+				),
+			]
 			return {
 				branch: entry.branch,
 				path: entry.path,
@@ -58,7 +69,8 @@ export async function listWorktrees(gitRoot: string): Promise<WorktreeInfo[]> {
 				merged: false,
 				isMain,
 				status: 'enrichment failed',
-				detectionError: error instanceof Error ? error.message : String(error),
+				detectionError: errorMsg,
+				issues,
 			} satisfies WorktreeInfo
 		},
 	})
@@ -155,9 +167,11 @@ async function enrichWorktreeInfo(
 		merged: detection.merged,
 		isMain,
 		commitsAhead: detection.commitsAhead,
+		commitsBehind: detection.commitsBehind,
 		mergeMethod: detection.mergeMethod,
 		status,
 		detectionError: detection.detectionError,
+		issues: detection.issues,
 	}
 }
 

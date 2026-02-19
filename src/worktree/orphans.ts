@@ -10,12 +10,43 @@
 import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
-import { listWorktrees } from './list.js'
+import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import type { OrphanBranch, OrphanStatus } from './types.js'
 
 /** Default branches that should never be considered orphans. */
 const DEFAULT_PROTECTED = ['main', 'master', 'develop']
+
+/**
+ * Get the set of branch names that currently have worktrees.
+ *
+ * Why: `listWorktrees()` does full enrichment (merge detection, dirty checks,
+ * etc.) which is wasteful when we only need branch names to filter orphans.
+ * Parsing raw porcelain output is orders of magnitude cheaper.
+ *
+ * @param gitRoot - Main worktree root
+ * @returns Set of branch names that have worktrees
+ */
+export async function getWorktreeBranches(
+	gitRoot: string,
+): Promise<Set<string>> {
+	const result = await spawnAndCollect(
+		['git', 'worktree', 'list', '--porcelain'],
+		{ cwd: gitRoot },
+	)
+	if (result.exitCode !== 0) {
+		throw new Error(`Failed to list worktrees: ${result.stderr.trim()}`)
+	}
+
+	const branches = new Set<string>()
+	for (const line of result.stdout.split('\n')) {
+		// Porcelain format: "branch refs/heads/<name>"
+		if (line.startsWith('branch refs/heads/')) {
+			branches.add(line.slice('branch refs/heads/'.length).trim())
+		}
+	}
+	return branches
+}
 
 /**
  * List local branches that have no associated worktree.
@@ -48,9 +79,10 @@ export async function listOrphanBranches(
 		.split('\n')
 		.filter((b) => b.length > 0)
 
-	// Get branches that have worktrees
-	const worktrees = await listWorktrees(gitRoot)
-	const worktreeBranches = new Set(worktrees.map((wt) => wt.branch))
+	// Get branches that have worktrees using lightweight porcelain parse.
+	// Why: avoids full enrichment (merge detection, dirty checks) that
+	// listWorktrees() would do -- we only need branch names here.
+	const worktreeBranches = await getWorktreeBranches(gitRoot)
 
 	// Get main branch for merge comparison
 	const mainBranch = await getMainBranch(gitRoot)
@@ -109,15 +141,29 @@ export async function listOrphanBranches(
 				merged: detection.merged,
 				mergeMethod: detection.mergeMethod,
 				detectionError: detection.detectionError,
+				issues: detection.issues,
 			}
 		},
-		onError: (branch, error) => ({
-			branch,
-			status: 'unknown' as OrphanStatus,
-			commitsAhead: -1,
-			merged: false,
-			mergeMethod: undefined,
-			detectionError: error instanceof Error ? error.message : String(error),
-		}),
+		onError: (branch, error) => {
+			const errorMsg = error instanceof Error ? error.message : String(error)
+			const issues = [
+				createDetectionIssue(
+					DETECTION_CODES.ENRICHMENT_FAILED,
+					'error',
+					'enrichment',
+					errorMsg,
+					false,
+				),
+			]
+			return {
+				branch,
+				status: 'unknown' as OrphanStatus,
+				commitsAhead: -1,
+				merged: false,
+				mergeMethod: undefined,
+				detectionError: errorMsg,
+				issues,
+			}
+		},
 	})
 }

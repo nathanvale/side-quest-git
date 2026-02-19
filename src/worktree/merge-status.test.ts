@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
+import { DETECTION_CODES } from './detection-issue.js'
 import { checkIsShallow, cleanupStaleTempDirs, detectMergeStatus } from './merge-status.js'
 
 let dirs: string[] = []
@@ -940,5 +941,164 @@ describe('detectMergeStatus - AbortSignal support (#14)', () => {
 		// Either aborted (if signal fired before detection) or succeeded (if fast enough)
 		// The key invariant: no unhandled exception is thrown
 		expect(['detection aborted', undefined]).toContain(result.detectionError)
+	})
+})
+
+describe('detectMergeStatus - issues array (structured errors)', () => {
+	test('no issues on successful ancestor detection', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await spawnAndCollect(['git', 'merge', '--no-ff', 'feature'], {
+			cwd: gitRoot,
+		})
+
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(true)
+		expect(result.detectionError).toBeUndefined()
+		expect(result.issues).toBeUndefined()
+	})
+
+	test('no issues on successful squash detection', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(true)
+		expect(result.mergeMethod).toBe('squash')
+		expect(result.issues).toBeUndefined()
+	})
+
+	test('kill switch returns DETECTION_DISABLED issue with error severity', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		process.env.SIDE_QUEST_NO_DETECTION = '1'
+		try {
+			const result = await detectMergeStatus(gitRoot, 'feature')
+
+			expect(result.issues).toBeDefined()
+			expect(result.issues!.length).toBe(1)
+			expect(result.issues![0]!.code).toBe(DETECTION_CODES.DETECTION_DISABLED)
+			// Kill switch is a warning (detection returned a result, just disabled)
+			expect(result.issues![0]!.severity).toBe('warning')
+			expect(result.issues![0]!.source).toBe('kill-switch')
+			expect(result.issues![0]!.countsReliable).toBe(false)
+			// Backward compat: detectionError still populated
+			expect(result.detectionError).toBe('detection disabled')
+		} finally {
+			delete process.env.SIDE_QUEST_NO_DETECTION
+		}
+	})
+
+	test('shallow clone returns SHALLOW_CLONE issue with error severity', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: true,
+		})
+
+		expect(result.issues).toBeDefined()
+		expect(result.issues!.length).toBe(1)
+		expect(result.issues![0]!.code).toBe(DETECTION_CODES.SHALLOW_CLONE)
+		expect(result.issues![0]!.severity).toBe('error')
+		expect(result.issues![0]!.source).toBe('shallow-guard')
+		expect(result.issues![0]!.countsReliable).toBe(false)
+		// Backward compat: detectionError derived from first error-severity issue
+		expect(result.detectionError).toContain('shallow clone')
+	})
+
+	test('isShallow null sets SHALLOW_CHECK_FAILED warning issue', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		await squashIntoMain(gitRoot, 'feature')
+		await assertDagPreconditions(gitRoot, 'feature')
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			isShallow: null,
+		})
+
+		// Detection still succeeds
+		expect(result.merged).toBe(true)
+		// But a warning issue is recorded
+		expect(result.issues).toBeDefined()
+		const shallowIssue = result.issues!.find((i) => i.code === DETECTION_CODES.SHALLOW_CHECK_FAILED)
+		expect(shallowIssue).toBeDefined()
+		expect(shallowIssue!.severity).toBe('warning')
+		expect(shallowIssue!.source).toBe('shallow-guard')
+		expect(shallowIssue!.countsReliable).toBe(true)
+		// Backward compat: detectionError still set from the warning
+		expect(result.detectionError).toContain('shallow check failed')
+	})
+
+	test('merge-base fatal returns MERGE_BASE_FAILED issue with error severity', async () => {
+		const gitRoot = await initRepo()
+
+		// Non-existent branch triggers merge-base fatal (exit 128)
+		const result = await detectMergeStatus(gitRoot, 'nonexistent', 'main')
+
+		expect(result.issues).toBeDefined()
+		expect(result.issues!.length).toBeGreaterThanOrEqual(1)
+		const issue = result.issues!.find((i) => i.code === DETECTION_CODES.MERGE_BASE_FAILED)
+		expect(issue).toBeDefined()
+		expect(issue!.severity).toBe('error')
+		expect(issue!.source).toBe('layer1')
+		expect(issue!.countsReliable).toBe(false)
+		// Backward compat: detectionError matches issue message
+		expect(result.detectionError).toBe(issue!.message)
+	})
+
+	test('abort before detection returns CHERRY_TIMEOUT issue', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		const controller = new AbortController()
+		controller.abort()
+
+		const result = await detectMergeStatus(gitRoot, 'feature', 'main', {
+			signal: controller.signal,
+		})
+
+		expect(result.issues).toBeDefined()
+		expect(result.issues!.length).toBe(1)
+		expect(result.issues![0]!.code).toBe(DETECTION_CODES.CHERRY_TIMEOUT)
+		expect(result.issues![0]!.severity).toBe('warning')
+		expect(result.issues![0]!.source).toBe('layer3-cherry')
+		// Backward compat: detectionError still set
+		expect(result.detectionError).toBe('detection aborted')
+	})
+
+	test('detectionError is derived from first error-severity issue when multiple issues exist', async () => {
+		// isShallow=null produces a warning (SHALLOW_CHECK_FAILED), then if
+		// the branch ref is invalid we also get MERGE_BASE_FAILED (error).
+		// detectionError should be the error-severity issue's message.
+		const gitRoot = await initRepo()
+
+		const result = await detectMergeStatus(gitRoot, 'nonexistent', 'main', {
+			isShallow: null,
+		})
+
+		expect(result.issues).toBeDefined()
+		expect(result.issues!.length).toBeGreaterThanOrEqual(2)
+
+		const errorIssue = result.issues!.find((i) => i.severity === 'error')
+		expect(errorIssue).toBeDefined()
+		// detectionError must match the error-severity issue, not the warning
+		expect(result.detectionError).toBe(errorIssue!.message)
+	})
+
+	test('issues field absent when no issues (clean result)', async () => {
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+		// Not merged -- should return no issues (just not merged)
+		const result = await detectMergeStatus(gitRoot, 'feature')
+
+		expect(result.merged).toBe(false)
+		expect(result.issues).toBeUndefined()
+		expect(result.detectionError).toBeUndefined()
 	})
 })

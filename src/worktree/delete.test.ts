@@ -158,6 +158,40 @@ describe('deleteWorktree', () => {
 			expect(check.status).toBe('merged')
 		})
 
+		test('detectionError and issues are undefined for clean detection', async () => {
+			await createTestWorktree('feat/clean-detection')
+
+			const check = await checkBeforeDelete(gitRoot, 'feat/clean-detection')
+			expect(check.exists).toBe(true)
+			expect(check.detectionError).toBeUndefined()
+			expect(check.issues).toBeUndefined()
+		})
+
+		test('surfaces detectionError and issues when detection is disabled via kill switch', async () => {
+			await createTestWorktree('feat/kill-switch')
+
+			const original = process.env.SIDE_QUEST_NO_DETECTION
+			process.env.SIDE_QUEST_NO_DETECTION = '1'
+			try {
+				const check = await checkBeforeDelete(gitRoot, 'feat/kill-switch')
+				expect(check.exists).toBe(true)
+				// detectionError should be the human-readable message from the kill-switch issue
+				expect(typeof check.detectionError).toBe('string')
+				expect(check.detectionError).toBe('detection disabled')
+				// issues should contain the structured DETECTION_DISABLED issue
+				expect(Array.isArray(check.issues)).toBe(true)
+				expect(check.issues?.length).toBeGreaterThan(0)
+				expect(check.issues?.[0]?.code).toBe('DETECTION_DISABLED')
+				expect(check.issues?.[0]?.severity).toBe('warning')
+			} finally {
+				if (original === undefined) {
+					delete process.env.SIDE_QUEST_NO_DETECTION
+				} else {
+					process.env.SIDE_QUEST_NO_DETECTION = original
+				}
+			}
+		})
+
 		test('reports merged, dirty when merged branch is behind main and dirty', async () => {
 			const wtPath = await createTestWorktree('feat/merged-dirty-behind')
 			fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'done')
@@ -243,6 +277,56 @@ describe('deleteWorktree', () => {
 			await expect(deleteWorktree(gitRoot, 'feat/no-force')).rejects.toThrow(
 				'Failed to remove worktree',
 			)
+		})
+
+		test('includes mergeMethod=ancestor for a regular-merged branch', async () => {
+			const wtPath = await createTestWorktree('feat/ancestor-delete')
+			fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'done')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'feature'], {
+				cwd: wtPath,
+			})
+			await spawnAndCollect(['git', 'merge', 'feat/ancestor-delete'], {
+				cwd: gitRoot,
+			})
+
+			const result = await deleteWorktree(gitRoot, 'feat/ancestor-delete')
+			expect(result.mergeMethod).toBe('ancestor')
+		})
+
+		test('includes mergeMethod=squash for a squash-merged branch', async () => {
+			const wtPath = await createTestWorktree('feat/squash-delete')
+			fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'squash work')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'squash work'], {
+				cwd: wtPath,
+			})
+
+			await spawnAndCollect(['git', 'merge', '--squash', 'feat/squash-delete'], {
+				cwd: gitRoot,
+			})
+			await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat/squash-delete'], {
+				cwd: gitRoot,
+			})
+
+			const result = await deleteWorktree(gitRoot, 'feat/squash-delete', {
+				force: true,
+			})
+			expect(result.mergeMethod).toBe('squash')
+		})
+
+		test('mergeMethod is undefined for a branch with unmerged commits', async () => {
+			const wtPath = await createTestWorktree('feat/unmerged-delete')
+			fs.writeFileSync(path.join(wtPath, 'unmerged.txt'), 'not merged yet')
+			await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+			await spawnAndCollect(['git', 'commit', '-m', 'unmerged commit'], {
+				cwd: wtPath,
+			})
+
+			const result = await deleteWorktree(gitRoot, 'feat/unmerged-delete', {
+				force: true,
+			})
+			expect(result.mergeMethod).toBeUndefined()
 		})
 	})
 })

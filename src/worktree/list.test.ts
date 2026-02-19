@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
+import { DETECTION_CODES } from './detection-issue.js'
 import { listWorktrees } from './list.js'
 
 describe('listWorktrees', () => {
@@ -165,6 +166,33 @@ describe('listWorktrees', () => {
 		expect(feature).toBeDefined()
 		expect(feature!.commitsAhead).toBe(2)
 		expect(feature!.status).toBe('2 ahead')
+	})
+
+	test('commitsBehind propagated to WorktreeInfo when branch has diverged', async () => {
+		// Create a feature branch at the current tip of main
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-diverged')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/diverged', wtPath], {
+			cwd: gitRoot,
+		})
+
+		// Add a commit on the feature branch (makes it 1 ahead)
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'feature work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'feature work'], { cwd: wtPath })
+
+		// Advance main with a new commit so the feature branch is also behind (diverged)
+		fs.writeFileSync(path.join(gitRoot, 'main-advance.txt'), 'main moved forward')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'advance main'], { cwd: gitRoot })
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/diverged')
+
+		expect(feature).toBeDefined()
+		// Both counts populated from MergeDetectionResult
+		expect(feature!.commitsAhead).toBe(1)
+		expect(feature!.commitsBehind).toBe(1)
+		expect(feature!.status).toBe('1 ahead, 1 behind')
 	})
 
 	test('branch with commits ahead and dirty shows combined status', async () => {
@@ -403,5 +431,68 @@ describe('listWorktrees', () => {
 				process.env.SIDE_QUEST_ITEM_TIMEOUT_MS = origTimeout
 			}
 		}
+	})
+
+	test('issues propagated from detection result to WorktreeInfo', async () => {
+		// The NO_DETECTION kill switch returns a DETECTION_DISABLED issue.
+		// Verify it appears on the WorktreeInfo entry.
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-issues')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/issues', wtPath], { cwd: gitRoot })
+
+		process.env.SIDE_QUEST_NO_DETECTION = '1'
+		try {
+			const worktrees = await listWorktrees(gitRoot)
+			const feature = worktrees.find((w) => w.branch === 'feat/issues')
+
+			expect(feature).toBeDefined()
+			expect(feature!.issues).toBeDefined()
+			expect(feature!.issues!.length).toBeGreaterThanOrEqual(1)
+			expect(feature!.issues![0]!.code).toBe(DETECTION_CODES.DETECTION_DISABLED)
+			// Backward compat: detectionError still set
+			expect(feature!.detectionError).toBe('detection disabled')
+		} finally {
+			delete process.env.SIDE_QUEST_NO_DETECTION
+		}
+	})
+
+	test('clean branch has no issues field (undefined)', async () => {
+		// A freshly created worktree with no detection problems should have
+		// issues=undefined (not an empty array).
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-clean-issues')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/clean-issues', wtPath], {
+			cwd: gitRoot,
+		})
+
+		const worktrees = await listWorktrees(gitRoot)
+		const feature = worktrees.find((w) => w.branch === 'feat/clean-issues')
+
+		expect(feature).toBeDefined()
+		expect(feature!.issues).toBeUndefined()
+		expect(feature!.detectionError).toBeUndefined()
+	})
+
+	test('onError fallback populates structured ENRICHMENT_FAILED issue', async () => {
+		// Delete the worktree directory to trigger an enrichment failure.
+		// The onError handler should attach a structured issue.
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-enrich-fail')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/enrich-fail', wtPath], {
+			cwd: gitRoot,
+		})
+
+		fs.rmSync(wtPath, { recursive: true, force: true })
+
+		const worktrees = await listWorktrees(gitRoot)
+		const failed = worktrees.find((w) => w.branch === 'feat/enrich-fail')
+
+		expect(failed).toBeDefined()
+		expect(failed!.issues).toBeDefined()
+		expect(failed!.issues!.length).toBe(1)
+		expect(failed!.issues![0]!.code).toBe(DETECTION_CODES.ENRICHMENT_FAILED)
+		expect(failed!.issues![0]!.severity).toBe('error')
+		expect(failed!.issues![0]!.source).toBe('enrichment')
+		expect(failed!.issues![0]!.countsReliable).toBe(false)
+		// Backward compat: detectionError still set
+		expect(failed!.detectionError).toBeDefined()
+		expect(failed!.detectionError).toBe(failed!.issues![0]!.message)
 	})
 })
