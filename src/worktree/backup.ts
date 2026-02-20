@@ -71,7 +71,9 @@ export async function createBackupRef(
 	const refName = toRefName(branch)
 
 	const updateResult = await spawnAndCollect(
-		['git', 'update-ref', refName, commit],
+		// Force reflog creation so backup age is based on ref-write time, not
+		// commit metadata. cleanupBackupRefs reads this reflog timestamp.
+		['git', 'update-ref', '--create-reflog', refName, commit],
 		{ cwd: gitRoot },
 	)
 	if (updateResult.exitCode !== 0) {
@@ -94,8 +96,8 @@ export async function createBackupRef(
  * @returns Array of BackupRef objects sorted oldest-first by createdAt
  */
 export async function listBackupRefs(gitRoot: string): Promise<BackupRef[]> {
-	// %(creatordate:iso-strict) gives us an ISO 8601 timestamp for when the
-	// ref was last updated -- which corresponds to when the backup was created.
+	// Keep a fallback date in the for-each-ref line, but prefer reflog-derived
+	// timestamps (true ref-write time) when available.
 	const result = await spawnAndCollect(
 		[
 			'git',
@@ -124,11 +126,14 @@ export async function listBackupRefs(gitRoot: string): Promise<BackupRef[]> {
 		if (spaceIdx1 === -1 || spaceIdx2 === -1) continue
 
 		const commit = line.slice(0, spaceIdx1)
-		const createdAt = line.slice(spaceIdx1 + 1, spaceIdx2)
+		const fallbackDate = line.slice(spaceIdx1 + 1, spaceIdx2)
 		const refname = line.slice(spaceIdx2 + 1)
 		const branch = refname.slice(BACKUP_PREFIX.length)
 
-		if (!commit || !createdAt || !branch) continue
+		if (!commit || !branch) continue
+
+		const createdAt =
+			(await getBackupRefCreatedAt(gitRoot, refname)) ?? fallbackDate
 
 		refs.push({ branch, commit, createdAt })
 	}
@@ -215,7 +220,15 @@ export async function cleanupBackupRefs(
 	const deleted: string[] = []
 
 	for (const ref of refs) {
-		const age = new Date(ref.createdAt).getTime()
+		// Use reflog-derived timestamp when present. If no reflog exists (legacy
+		// refs created before --create-reflog), fail safe by skipping deletion.
+		const createdAt = await getBackupRefCreatedAt(
+			gitRoot,
+			toRefName(ref.branch),
+		)
+		if (!createdAt) continue
+		const age = new Date(createdAt).getTime()
+		if (!Number.isFinite(age)) continue
 		if (age < cutoff) {
 			const refName = toRefName(ref.branch)
 			const result = await spawnAndCollect(
@@ -229,4 +242,39 @@ export async function cleanupBackupRefs(
 	}
 
 	return deleted
+}
+
+/**
+ * Get backup-ref creation/update time from its reflog selector.
+ *
+ * Why: `%(creatordate)` on refs that point to commits reflects commit metadata,
+ * not when the backup ref was written. The reflog timestamp is the correct
+ * signal for retention logic.
+ *
+ * @param gitRoot - Main worktree root
+ * @param refName - Full backup ref name (e.g. refs/backup/feat/x)
+ * @returns ISO timestamp, or null when no reflog entry exists
+ */
+async function getBackupRefCreatedAt(
+	gitRoot: string,
+	refName: string,
+): Promise<string | null> {
+	const reflogResult = await spawnAndCollect(
+		[
+			'git',
+			'reflog',
+			'show',
+			'--date=iso-strict',
+			'--format=%gd',
+			refName,
+			'-n',
+			'1',
+		],
+		{ cwd: gitRoot },
+	)
+	if (reflogResult.exitCode !== 0) return null
+	const selector = reflogResult.stdout.trim()
+	if (!selector) return null
+	const match = /@\{([^}]+)\}$/.exec(selector)
+	return match?.[1]?.trim() ?? null
 }

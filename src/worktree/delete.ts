@@ -77,7 +77,7 @@ export async function checkBeforeDelete(
 			cwd: gitRoot,
 		},
 	)
-	const exists = existsResult.stdout.includes(worktreePath)
+	const exists = hasWorktreePath(existsResult.stdout, worktreePath)
 
 	if (!exists) {
 		return {
@@ -95,7 +95,10 @@ export async function checkBeforeDelete(
 	const dirty =
 		statusResult.exitCode === 0 && statusResult.stdout.trim().length > 0
 
-	const isShallow = await checkIsShallow(gitRoot)
+	const isShallow =
+		process.env.SIDE_QUEST_NO_DETECTION === '1'
+			? null
+			: await checkIsShallow(gitRoot)
 	const detection = await detectMergeStatus(gitRoot, branchName, undefined, {
 		isShallow,
 		...(options.detectionTimeout !== undefined
@@ -173,7 +176,10 @@ export async function deleteWorktree(
 	// the delete operation -- log a warning and proceed with undefined.
 	let detection: Awaited<ReturnType<typeof detectMergeStatus>> | undefined
 	try {
-		const isShallow = await checkIsShallow(gitRoot)
+		const isShallow =
+			process.env.SIDE_QUEST_NO_DETECTION === '1'
+				? null
+				: await checkIsShallow(gitRoot)
 		detection = await detectMergeStatus(gitRoot, branchName, undefined, {
 			isShallow,
 			...(options.shallowOk !== undefined
@@ -246,4 +252,18 @@ async function runPreDelete(command: string, cwd: string): Promise<void> {
 			`preDelete command failed (${command}): ${result.stderr.trim()}`,
 		)
 	}
+}
+
+/**
+ * Check whether porcelain output contains an exact worktree path entry.
+ *
+ * Why: substring checks can false-positive on prefix collisions such as
+ * `/repo/.worktrees/feat-foo` vs `/repo/.worktrees/feat-foobar`.
+ */
+function hasWorktreePath(porcelainOutput: string, targetPath: string): boolean {
+	for (const line of porcelainOutput.split('\n')) {
+		if (!line.startsWith('worktree ')) continue
+		if (line.slice('worktree '.length).trim() === targetPath) return true
+	}
+	return false
 }

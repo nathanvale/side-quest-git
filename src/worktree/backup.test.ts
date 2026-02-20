@@ -50,6 +50,22 @@ describe('backup refs', () => {
 		await spawnAndCollect(['git', 'branch', branch], { cwd: gitRoot })
 	}
 
+	/** Helper: create a branch whose tip commit has an old committer date. */
+	async function createOldDatedBranch(branch: string): Promise<void> {
+		await spawnAndCollect(['git', 'checkout', '-b', branch], { cwd: gitRoot })
+		fs.writeFileSync(path.join(gitRoot, `${branch.replaceAll('/', '-')}.txt`), 'old')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', `old commit for ${branch}`], {
+			cwd: gitRoot,
+			env: {
+				...process.env,
+				GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+				GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+			},
+		})
+		await spawnAndCollect(['git', 'checkout', 'main'], { cwd: gitRoot })
+	}
+
 	/** Helper: resolve a ref to its SHA (returns empty string if not found). */
 	async function resolveRef(ref: string): Promise<string> {
 		const result = await spawnAndCollect(['git', 'rev-parse', '--verify', ref], { cwd: gitRoot })
@@ -123,6 +139,28 @@ describe('backup refs', () => {
 
 			const backupSha = await resolveRef('refs/backup/feat/tag-collision')
 			expect(backupSha).toBe(branchSha)
+		})
+
+		test('creates a reflog entry so backup age tracks ref-write time', async () => {
+			await createBranch('feat/reflog-age')
+
+			await createBackupRef(gitRoot, 'feat/reflog-age')
+
+			const reflogResult = await spawnAndCollect(
+				[
+					'git',
+					'reflog',
+					'show',
+					'--date=iso-strict',
+					'--format=%gd',
+					'refs/backup/feat/reflog-age',
+					'-n',
+					'1',
+				],
+				{ cwd: gitRoot },
+			)
+			expect(reflogResult.exitCode).toBe(0)
+			expect(reflogResult.stdout.trim()).toContain('@{')
 		})
 	})
 
@@ -262,6 +300,16 @@ describe('backup refs', () => {
 			// Backup ref should still be present
 			const backupSha = await resolveRef('refs/backup/feat/young')
 			expect(backupSha).toBeTruthy()
+		})
+
+		test('does not delete a fresh backup for a branch with an old commit date', async () => {
+			await createOldDatedBranch('feat/old-commit-date')
+			await createBackupRef(gitRoot, 'feat/old-commit-date')
+
+			// Retention should be based on backup ref write time (now), not commit date (year 2000).
+			const deleted = await cleanupBackupRefs(gitRoot, 30)
+			expect(deleted).not.toContain('feat/old-commit-date')
+			expect(await resolveRef('refs/backup/feat/old-commit-date')).toBeTruthy()
 		})
 
 		test('deletes backups older than maxAgeDays=0', async () => {

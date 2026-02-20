@@ -60,6 +60,15 @@ describe('deleteWorktree', () => {
 			expect(check.exists).toBe(false)
 		})
 
+		test('does not false-positive on prefix-colliding worktree paths', async () => {
+			await createTestWorktree('feat/foobar')
+
+			// Regression: substring matching treated feat/foo as existing because
+			// ".worktrees/feat-foo" is a prefix of ".worktrees/feat-foobar".
+			const check = await checkBeforeDelete(gitRoot, 'feat/foo')
+			expect(check.exists).toBe(false)
+		})
+
 		test('reports clean worktree', async () => {
 			await createTestWorktree('feat/clean')
 
