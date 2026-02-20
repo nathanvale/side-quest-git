@@ -2,16 +2,45 @@
 '@side-quest/git': major
 ---
 
-Breaking: `worktree list --json` output changed from a bare array to `{ worktrees, health }`.
+Major worktree lifecycle hardening and observability release.
 
-Previously the command emitted a raw JSON array of worktree objects. It now emits a structured object with two keys:
+### Breaking change
 
-- `worktrees` - the array of worktree objects (filtered by `--all` as before)
-- `health` - a health summary object indicating whether all enrichments succeeded
+`worktree list --json` output changed from a bare array to an object:
 
-When `--include-orphans` is supplied the response also includes `orphans` and `orphanHealth` keys.
+- `worktrees`: array of worktree entries (filtered by `--all` as before)
+- `health`: enrichment health summary
 
-**Migration:** Update any scripts that parse the raw array output:
+When `--include-orphans` is supplied, output now also includes:
+
+- `orphans`
+- `orphanHealth`
+
+### Added
+
+- Operational safety controls for detection:
+  - AbortSignal threading and timeout handling
+  - Full kill switch (`SIDE_QUEST_NO_DETECTION=1`)
+  - Per-item timeout guard (`SIDE_QUEST_ITEM_TIMEOUT_MS`)
+  - SIGTERM temp-dir cleanup resilience
+- Detection and lifecycle enhancements:
+  - Structured detection issues (`issues`) with codes/severity
+  - `mergeMethod` propagation across list/status/delete/clean paths
+  - `commitsBehind` support in status strings
+  - `upstreamGone` detection for deleted remote tracking refs
+  - `--timeout` and `--shallow-ok` flags on detection-aware commands
+- Recoverability improvements:
+  - Backup refs before branch deletion (`refs/backup/<branch>`)
+  - `worktree recover` command to list, restore, and clean up backup refs
+  - Backup retention based on ref-write/reflog timestamps
+- Performance and observability:
+  - Configurable list/orphan concurrency
+  - Health metadata (`allFailed`, degraded/fatal counts)
+  - Detection benchmark tooling and debug logging hooks
+
+### Migration
+
+Update scripts that parsed the old raw list array:
 
 ```bash
 # Before
