@@ -1,7 +1,7 @@
 # Review Fixes Summary Report
 
 ## Overview
-All 13 staff engineer review issues (#40-#52) have been addressed across 3 phases. The codebase passes full validation with 435 tests, zero type errors, and zero lint errors.
+All 13 staff engineer review issues (#40-#52) have been addressed across 3 phases. A post-review hardening patch was also applied on 2026-02-20, followed by a focused follow-up hardening commit (`fb12223`). The codebase passes full validation with 438 tests, zero type errors, and zero lint errors.
 
 ## Issue Status
 
@@ -25,10 +25,28 @@ All 13 staff engineer review issues (#40-#52) have been addressed across 3 phase
 
 | Check | Result |
 |-------|--------|
-| `bun test` | 435 tests passing, 0 failures |
+| `bun test` | 438 tests passing, 0 failures |
 | `bunx tsc --noEmit` | Zero type errors |
 | `bunx biome ci .` | Zero lint errors, 111 files checked |
 | `bun run validate` | PASS (lint + types + build + test) |
+
+## Post-Review Patch (2026-02-20)
+
+Additional hardening changes applied after the initial #40-#52 fixes:
+
+1. **Backup retention correctness**
+   - `cleanupBackupRefs` now uses backup-ref reflog timestamps (ref-write time), not commit metadata time.
+   - `createBackupRef` now uses `git update-ref --create-reflog`.
+2. **Delete/check kill-switch consistency**
+   - `checkBeforeDelete` and `deleteWorktree` now skip `checkIsShallow()` when `SIDE_QUEST_NO_DETECTION=1`.
+3. **Exact worktree existence matching**
+   - `checkBeforeDelete` now parses `git worktree list --porcelain` entries and matches exact `worktree` paths (fixes prefix-collision false positives).
+4. **Benchmark CLI input hardening**
+   - `detection-benchmark.ts` now validates `worktreeCount` as a non-negative integer.
+   - Invalid values (e.g. `abc`, `-2`) now fail fast with a clear error instead of producing runtime TypeErrors.
+   - Non-null assertions on benchmark branch arrays were removed; explicit guards now verify required branches exist before detection benchmarking.
+5. **Explicit detection-code regression coverage**
+   - `detection-issue.test.ts` now explicitly asserts `DETECTION_CODES.DETECTION_ABORTED` in the "all expected codes are present" test.
 
 ## Total Rework Cycles
 0 across all 3 phases -- every builder passed validation on first attempt.
@@ -47,14 +65,15 @@ All 13 staff engineer review issues (#40-#52) have been addressed across 3 phase
 - `src/worktree/cli.test.ts` -- --shallow-ok, recover, output flushing tests
 - `src/worktree/clean.ts` -- backup refs before deletion
 - `src/worktree/clean.test.ts` -- backup ref verification tests
-- `src/worktree/backup.ts` -- refs/heads/ prefix
-- `src/worktree/backup.test.ts` -- tag collision tests
-- `src/worktree/delete.ts` -- try/catch around detection
-- `src/worktree/delete.test.ts` -- detection failure resilience tests
+- `src/worktree/backup.ts` -- refs/heads/ prefix, reflog-backed backup timestamps for retention
+- `src/worktree/backup.test.ts` -- tag collision tests, reflog/retention regression coverage
+- `src/worktree/delete.ts` -- try/catch around detection, exact porcelain path matching, kill-switch shallow-check skip
+- `src/worktree/delete.test.ts` -- detection failure resilience tests, prefix-collision regression coverage
 - `src/worktree/list.ts` -- parseEnvInt usage
 - `src/worktree/orphans.ts` -- parseEnvInt usage
 - `src/worktree/detection-issue.ts` -- DETECTION_ABORTED code
-- `src/worktree/benchmarks/detection-benchmark.ts` -- import.meta.main guard
+- `src/worktree/benchmarks/detection-benchmark.ts` -- import.meta.main guard + CLI arg validation and branch-presence guards
+- `src/worktree/detection-issue.test.ts` -- explicit DETECTION_ABORTED assertion in expected-codes test
 
 ### Report Files
 - `specs/reports/phase-1-review-critical-fixes.md`

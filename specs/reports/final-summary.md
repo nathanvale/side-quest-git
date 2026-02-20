@@ -6,7 +6,7 @@
 
 ## Overall Status: COMPLETE
 
-All 18 issues addressed across 5 phases. 410 tests passing, zero type errors, zero lint errors.
+All 18 issues were addressed across 5 phases (phase-complete baseline: 410 tests). A post-review hardening patch was then applied on 2026-02-20. Current branch validation: 438 tests passing, zero type errors, zero lint errors.
 
 ## Commit History
 
@@ -16,6 +16,7 @@ All 18 issues addressed across 5 phases. 410 tests passing, zero type errors, ze
 | `b32a9c2` | Phase 2+3: Structured Errors & Type Propagation | #18, #20, #21, #22, #23, #30 |
 | `adcc3b3` | Phase 4: Detection Enhancements | #19, #24, #28, #31 |
 | `bfff0bc` | Phase 5: Performance & Observability | #16, #25, #26, #27, #29 |
+| `fb12223` | Post-review follow-up hardening | benchmark arg validation, DETECTION_ABORTED explicit test coverage |
 
 ## Issues Closed
 
@@ -48,8 +49,9 @@ All 18 issues addressed across 5 phases. 410 tests passing, zero type errors, ze
 | Phase 2+3 | 333 |
 | Phase 4 | 374 |
 | Phase 5 | 410 |
+| Post-review hardening patch | 438 |
 
-## New Files Created (14)
+## New Files Created (15)
 
 - `src/worktree/detection-issue.ts` -- DetectionIssue interface and DETECTION_CODES
 - `src/worktree/detection-issue.test.ts`
@@ -90,6 +92,18 @@ All 18 issues addressed across 5 phases. 410 tests passing, zero type errors, ze
 ## Rework Cycles
 
 Zero rework cycles across all 5 phases. Every builder passed validation on first attempt.
+
+## Post-Review Hardening Patch (2026-02-20)
+
+Applied after staff-level code review to close additional correctness gaps:
+
+1. Backup-ref retention now uses reflog timestamp (backup write time), not commit date.
+2. `SIDE_QUEST_NO_DETECTION=1` now consistently skips shallow-check subprocesses in delete/check paths.
+3. `checkBeforeDelete` now uses exact `git worktree list --porcelain` path matching (fixes prefix-collision false positives).
+4. Added regression tests for all three cases.
+5. `detection-benchmark.ts` now validates CLI `worktreeCount` as a non-negative integer and fails fast with clear errors for invalid inputs.
+6. Removed unsafe non-null assertions in benchmark branch selection by adding explicit branch-presence guards before benchmark execution.
+7. Added explicit `DETECTION_ABORTED` assertion in `detection-issue.test.ts` so the full expected code set is directly covered.
 
 ## Lessons Learned
 
