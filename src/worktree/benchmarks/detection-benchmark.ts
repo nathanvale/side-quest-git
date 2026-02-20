@@ -511,6 +511,12 @@ export async function createBenchmarkRepo(worktreeCount: number): Promise<{
 export async function runDetectionBenchmark(
 	worktreeCount = 6,
 ): Promise<BenchmarkOutput> {
+	if (!Number.isInteger(worktreeCount) || worktreeCount < 0) {
+		throw new Error(
+			`Invalid worktreeCount "${worktreeCount}". Expected a non-negative integer.`,
+		)
+	}
+
 	process.stderr.write(
 		`[bench] creating temp repo with ${worktreeCount} branches...\n`,
 	)
@@ -518,14 +524,23 @@ export async function runDetectionBenchmark(
 	const { repoDir, ancestorBranches, squashBranches, unmergedBranches } =
 		await createBenchmarkRepo(worktreeCount)
 
+	const ancestorBranch = ancestorBranches[0]
+	const squashBranch = squashBranches[0]
+	const unmergedBranch = unmergedBranches[0]
+	if (!ancestorBranch || !squashBranch || !unmergedBranch) {
+		throw new Error(
+			'Benchmark repo setup failed: missing at least one branch for ancestor, squash, or unmerged state.',
+		)
+	}
+
 	try {
 		process.stderr.write('[bench] running detectMergeStatus benchmarks...\n')
 
 		const detection = await benchmarkDetectMergeStatus(
 			repoDir,
-			ancestorBranches[0]!,
-			squashBranches[0]!,
-			unmergedBranches[0]!,
+			ancestorBranch,
+			squashBranch,
+			unmergedBranch,
 		)
 
 		process.stderr.write(
@@ -555,11 +570,34 @@ export async function runDetectionBenchmark(
 	}
 }
 
+/**
+ * Parse and validate the optional CLI worktree-count argument.
+ *
+ * Why: The benchmark assumes a numeric count and previously accepted arbitrary
+ * input, which produced confusing runtime failures. Fail fast with a clear
+ * message so operators know how to invoke the script correctly.
+ *
+ * @param rawArg - Raw CLI arg from process.argv[2]
+ * @returns Parsed non-negative integer count
+ * @throws If the value is not an integer >= 0
+ */
+function parseWorktreeCountArg(rawArg: string | undefined): number {
+	if (rawArg === undefined) return 6
+
+	const parsed = Number(rawArg)
+	if (!Number.isInteger(parsed) || parsed < 0) {
+		throw new Error(
+			`Invalid worktreeCount "${rawArg}". Expected a non-negative integer.`,
+		)
+	}
+	return parsed
+}
+
 // Allow direct invocation: bun src/worktree/benchmarks/detection-benchmark.ts [worktreeCount]
 // Guard prevents the benchmark from auto-running when the module is imported
 // by tests or other code -- only executes when run as the entry point.
 if (import.meta.main) {
-	const worktreeCountArg = process.argv[2] ? Number(process.argv[2]) : 6
+	const worktreeCountArg = parseWorktreeCountArg(process.argv[2])
 	runDetectionBenchmark(worktreeCountArg)
 		.then((output) => {
 			process.stdout.write(JSON.stringify(output, null, 2))

@@ -15,6 +15,7 @@ describe('DETECTION_CODES', () => {
 		expect(DETECTION_CODES.GIT_PATH_FAILED).toBe('GIT_PATH_FAILED')
 		expect(DETECTION_CODES.DETECTION_DISABLED).toBe('DETECTION_DISABLED')
 		expect(DETECTION_CODES.ENRICHMENT_FAILED).toBe('ENRICHMENT_FAILED')
+		expect(DETECTION_CODES.DETECTION_ABORTED).toBe('DETECTION_ABORTED')
 	})
 
 	test('code values match their key names (self-describing)', () => {
