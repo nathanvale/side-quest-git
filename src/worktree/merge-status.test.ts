@@ -861,6 +861,77 @@ describe('cleanupStaleTempDirs - Temp-dir janitor (#17)', () => {
 
 		expect(fs.existsSync(legacyDir)).toBe(true)
 	})
+
+	test('EPERM from process.kill treats the process as alive (#45)', () => {
+		// Use our own PID -- definitely alive and won't produce EPERM.
+		// We simulate EPERM by mocking process.kill to throw EPERM for our test dir.
+		const livePid = process.pid
+		const fakeDir = makeFakeTempDir(livePid, 'eperm001')
+		dirs.push(fakeDir)
+
+		const originalKill = process.kill.bind(process)
+		let callCount = 0
+
+		// Temporarily replace process.kill to simulate an EPERM error
+		;(process as unknown as Record<string, unknown>).kill = (
+			pid: number,
+			signal: number | string,
+		) => {
+			callCount++
+			if (pid === livePid && callCount === 1) {
+				const err = new Error('Operation not permitted') as NodeJS.ErrnoException
+				err.code = 'EPERM'
+				throw err
+			}
+			return originalKill(pid, signal as NodeJS.Signals)
+		}
+
+		try {
+			expect(fs.existsSync(fakeDir)).toBe(true)
+
+			cleanupStaleTempDirs()
+
+			// EPERM means the process is alive -- dir should NOT be removed
+			// (it is fresh, so age check also passes)
+			expect(fs.existsSync(fakeDir)).toBe(true)
+		} finally {
+			;(process as unknown as Record<string, unknown>).kill = originalKill
+		}
+	})
+
+	test('ESRCH from process.kill treats the process as dead (#45)', () => {
+		// ESRCH = process doesn't exist; janitor should mark as stale.
+		const livePid = process.pid
+		const fakeDir = makeFakeTempDir(livePid, 'esrch001')
+		dirs.push(fakeDir) // register for cleanup in case test fails
+
+		const originalKill = process.kill.bind(process)
+		let callCount = 0
+
+		;(process as unknown as Record<string, unknown>).kill = (
+			pid: number,
+			signal: number | string,
+		) => {
+			callCount++
+			if (pid === livePid && callCount === 1) {
+				const err = new Error('No such process') as NodeJS.ErrnoException
+				err.code = 'ESRCH'
+				throw err
+			}
+			return originalKill(pid, signal as NodeJS.Signals)
+		}
+
+		try {
+			expect(fs.existsSync(fakeDir)).toBe(true)
+
+			cleanupStaleTempDirs()
+
+			// ESRCH means process is dead -- dir should be removed
+			expect(fs.existsSync(fakeDir)).toBe(false)
+		} finally {
+			;(process as unknown as Record<string, unknown>).kill = originalKill
+		}
+	})
 })
 
 describe('detectMergeStatus - AbortSignal support (#14)', () => {
@@ -1327,5 +1398,40 @@ describe('detectMergeStatus - shallowOk flag (#28)', () => {
 
 		// Key invariant: no shallow-clone guard error when shallowOk is set
 		expect(result.detectionError).not.toContain('shallow clone: detection unavailable')
+	})
+})
+
+describe('detectMergeStatus - Layer 1/2 AbortError handling (#41)', () => {
+	test('pre-aborted signal returns DETECTION_ABORTED gracefully without throwing', async () => {
+		// This test targets the new top-level try/catch for Layer 1/2 aborts.
+		// A pre-aborted signal means spawnAndCollect throws AbortError immediately
+		// when Layer 1 (git merge-base --is-ancestor) runs.
+		const gitRoot = await initRepo()
+		await createFeatureCommits(gitRoot, 'feature', 2)
+
+		// Create signal that is already aborted -- spawnAndCollect will throw
+		// AbortError synchronously when it receives this signal.
+		const controller = new AbortController()
+		controller.abort(new Error('test abort'))
+		const signal = controller.signal
+
+		// Must not throw -- abort should be caught and converted to a structured result
+		let result: Awaited<ReturnType<typeof detectMergeStatus>>
+		expect(async () => {
+			result = await detectMergeStatus(gitRoot, 'feature', 'main', { signal })
+		}).not.toThrow()
+
+		result = await detectMergeStatus(gitRoot, 'feature', 'main', { signal })
+
+		// Abort during L1/L2 returns a clean "no data" result
+		expect(result.merged).toBe(false)
+		expect(result.commitsAhead).toBe(-1)
+		expect(result.commitsBehind).toBe(-1)
+		expect(result.detectionError).toBeDefined()
+		expect(result.issues).toBeDefined()
+		// May come back as DETECTION_ABORTED (L1/L2 catch) or CHERRY_TIMEOUT
+		// (pre-abort early-exit) -- both are acceptable graceful outcomes
+		const validCodes = [DETECTION_CODES.DETECTION_ABORTED, DETECTION_CODES.CHERRY_TIMEOUT]
+		expect(validCodes).toContain(result.issues![0]!.code)
 	})
 })

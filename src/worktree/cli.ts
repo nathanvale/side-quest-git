@@ -34,9 +34,15 @@ async function main(): Promise<void> {
 	// The finally block in createIsolatedObjectEnv handles the normal path;
 	// this handler catches SIGTERM (e.g. container shutdown, `kill <pid>`).
 	// Exit code 143 = 128 + 15 (SIGTERM), the POSIX convention.
+	//
+	// Why process.exitCode instead of process.exit():
+	// Setting exitCode lets the event loop drain so that any other SIGTERM
+	// handler (e.g. the event server's server.stop()) has a chance to run
+	// before the process exits. process.exit() would terminate immediately,
+	// skipping those handlers.
 	process.on('SIGTERM', () => {
 		cleanupStaleTempDirs()
-		process.exit(143)
+		process.exitCode = 143
 	})
 
 	const { command, subcommand, positional, flags } = parseArgs(
@@ -125,8 +131,11 @@ async function main(): Promise<void> {
 			// Exit non-zero when every worktree enrichment failed -- this signals
 			// a systemic problem (broken git, bad repo state) rather than a
 			// per-entry issue that callers might choose to tolerate.
+			// Use process.exitCode + return instead of process.exit(1) so that
+			// piped stdout can fully flush before the process terminates.
 			if (health.allFailed) {
-				process.exit(1)
+				process.exitCode = 1
+				return
 			}
 			break
 		}
@@ -276,8 +285,11 @@ async function main(): Promise<void> {
 
 			// Exit non-zero when every orphan enrichment failed -- same systemic
 			// failure signal as the `list` command.
+			// Use process.exitCode + return instead of process.exit(1) so that
+			// piped stdout can fully flush before the process terminates.
 			if (orphanHealth.allFailed) {
-				process.exit(1)
+				process.exitCode = 1
+				return
 			}
 			break
 		}

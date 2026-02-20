@@ -139,24 +139,60 @@ export async function checkBeforeDelete(
  *
  * @param gitRoot - Main worktree root
  * @param branchName - Branch name of the worktree to delete
- * @param options - Deletion options (force, deleteBranch)
+ * @param options - Deletion options (force, deleteBranch, shallowOk, detectionTimeout)
  * @returns Delete result with branch, path, branchDeleted, and mergeMethod
  */
 export async function deleteWorktree(
 	gitRoot: string,
 	branchName: string,
-	options: { force?: boolean; deleteBranch?: boolean } = {},
+	options: {
+		force?: boolean
+		deleteBranch?: boolean
+		/**
+		 * Skip the shallow clone guard during merge detection.
+		 *
+		 * Why: CI environments often use shallow clones. Pass this when clone depth
+		 * is known to be sufficient for the branches under inspection.
+		 */
+		shallowOk?: boolean
+		/**
+		 * Override the Layer 3 cherry detection timeout in milliseconds.
+		 *
+		 * Why: Allows callers to tune squash detection per-run without touching
+		 * env vars. Precedence: this value > SIDE_QUEST_DETECTION_TIMEOUT_MS > 5000ms.
+		 */
+		detectionTimeout?: number
+	} = {},
 ): Promise<DeleteResult> {
 	const { config } = loadOrDetectConfig(gitRoot)
 	const sanitizedBranch = branchName.replace(/\//g, '-')
 	const worktreePath = path.join(gitRoot, config.directory, sanitizedBranch)
 
 	// Detect merge status before removal so mergeMethod is available in the
-	// event payload. Best-effort: if detection fails we proceed with undefined.
-	const isShallow = await checkIsShallow(gitRoot)
-	const detection = await detectMergeStatus(gitRoot, branchName, undefined, {
-		isShallow,
-	})
+	// event payload. Wrapped in try/catch: detection failure must never block
+	// the delete operation -- log a warning and proceed with undefined.
+	let detection: Awaited<ReturnType<typeof detectMergeStatus>> | undefined
+	try {
+		const isShallow = await checkIsShallow(gitRoot)
+		detection = await detectMergeStatus(gitRoot, branchName, undefined, {
+			isShallow,
+			...(options.shallowOk !== undefined
+				? { shallowOk: options.shallowOk }
+				: {}),
+			...(options.detectionTimeout !== undefined
+				? { timeout: options.detectionTimeout }
+				: {}),
+		})
+	} catch (err) {
+		// Detection failure is non-fatal: log a warning but proceed with deletion.
+		// This prevents a broken git state from locking out the delete command.
+		const msg = err instanceof Error ? err.message : String(err)
+		console.error(
+			JSON.stringify({
+				warning: `merge detection failed before delete: ${msg}`,
+			}),
+		)
+	}
 
 	if (config.preDelete) {
 		await runPreDelete(config.preDelete, worktreePath)
@@ -196,7 +232,7 @@ export async function deleteWorktree(
 		branch: branchName,
 		path: worktreePath,
 		branchDeleted,
-		...(detection.mergeMethod !== undefined
+		...(detection?.mergeMethod !== undefined
 			? { mergeMethod: detection.mergeMethod }
 			: {}),
 	}

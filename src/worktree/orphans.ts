@@ -13,6 +13,7 @@ import { getMainBranch } from '../git/main-branch.js'
 import { DEFAULT_CONCURRENCY } from './constants.js'
 import { debugLog } from './debug.js'
 import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
+import { parseEnvInt } from './env.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import type { OrphanBranch, OrphanStatus } from './types.js'
 import { checkUpstreamGone } from './upstream-gone.js'
@@ -133,11 +134,13 @@ export async function listOrphanBranches(
 
 	// Per-item timeout: same safety net as list.ts. A slow branch detection
 	// (e.g. huge history, slow disk) should not block the entire chunk.
-	const itemTimeoutMs = Number(process.env.SIDE_QUEST_ITEM_TIMEOUT_MS ?? 10000)
+	const itemTimeoutMs = parseEnvInt('SIDE_QUEST_ITEM_TIMEOUT_MS', 10000, {
+		min: 1,
+	})
 
 	const concurrency =
 		options.concurrency ??
-		Number(process.env.SIDE_QUEST_CONCURRENCY ?? DEFAULT_CONCURRENCY)
+		parseEnvInt('SIDE_QUEST_CONCURRENCY', DEFAULT_CONCURRENCY, { min: 1 })
 
 	const total = orphanCandidates.length
 	let processed = 0

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnAndCollect } from '@side-quest/core/spawn'
+import { listBackupRefs } from './backup.js'
 import { cleanWorktrees } from './clean.js'
 
 describe('cleanWorktrees', () => {
@@ -325,5 +326,34 @@ describe('cleanWorktrees', () => {
 				process.env.SIDE_QUEST_CONCURRENCY = orig
 			}
 		}
+	})
+
+	test('delete-branches creates backup ref before deleting branch (#43)', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-backup-check')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat-backup-check', wtPath], {
+			cwd: gitRoot,
+		})
+
+		// The worktree is pristine (same commit as main), so it is eligible for deletion
+		await cleanWorktrees(gitRoot, { deleteBranches: true })
+
+		// The backup ref should have been created before branch deletion
+		const refs = await listBackupRefs(gitRoot)
+		const backupBranches = refs.map((r) => r.branch)
+		expect(backupBranches).toContain('feat-backup-check')
+	})
+
+	test('orphan delete-branches creates backup ref before deleting orphan (#43)', async () => {
+		// Create an orphan branch (branch with no worktree) that is merged
+		await spawnAndCollect(['git', 'checkout', '-b', 'feat-orphan-backup'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'checkout', 'main'], { cwd: gitRoot })
+
+		// The orphan is at same commit as main so merged=true
+		await cleanWorktrees(gitRoot, { includeOrphans: true, force: true })
+
+		// Backup ref should exist for the orphan branch
+		const refs = await listBackupRefs(gitRoot)
+		const backupBranches = refs.map((r) => r.branch)
+		expect(backupBranches).toContain('feat-orphan-backup')
 	})
 })

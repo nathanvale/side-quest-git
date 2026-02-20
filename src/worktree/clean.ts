@@ -8,6 +8,7 @@
  */
 
 import { spawnAndCollect } from '@side-quest/core/spawn'
+import { createBackupRef } from './backup.js'
 import { listWorktrees } from './list.js'
 import { listOrphanBranches } from './orphans.js'
 import type {
@@ -150,6 +151,19 @@ export async function cleanWorktrees(
 
 			let branchDeleted = false
 			if (deleteBranches) {
+				// Create a backup ref before deletion so the branch is recoverable
+				// via `worktree recover <branch>`. Best-effort: if backup creation
+				// fails (e.g. the branch ref doesn't resolve), log and continue
+				// rather than blocking the whole clean operation.
+				try {
+					await createBackupRef(gitRoot, wt.branch)
+				} catch (backupErr) {
+					console.error(
+						JSON.stringify({
+							warning: `backup ref creation failed for "${wt.branch}": ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+						}),
+					)
+				}
 				const deleteFlag = force ? '-D' : '-d'
 				const branchResult = await spawnAndCollect(
 					['git', 'branch', deleteFlag, wt.branch],
@@ -189,6 +203,17 @@ export async function cleanWorktrees(
 			orphansDeleted = mergedOrphans
 		} else {
 			for (const orphan of mergedOrphans) {
+				// Create a backup ref before deletion for recoverability.
+				// Best-effort: log and continue if creation fails.
+				try {
+					await createBackupRef(gitRoot, orphan.branch)
+				} catch (backupErr) {
+					console.error(
+						JSON.stringify({
+							warning: `backup ref creation failed for orphan "${orphan.branch}": ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+						}),
+					)
+				}
 				const deleteFlag = force ? '-D' : '-d'
 				const result = await spawnAndCollect(
 					['git', 'branch', deleteFlag, orphan.branch],

@@ -26,6 +26,7 @@ import {
 	DETECTION_CODES,
 	type DetectionIssue,
 } from './detection-issue.js'
+import { parseEnvInt } from './env.js'
 import { getAheadBehindCounts } from './git-counts.js'
 import type { MergeMethod } from './types.js'
 
@@ -72,9 +73,23 @@ export function cleanupStaleTempDirs(): void {
 						// Process is alive -- check age as secondary guard
 						const stat = statSync(fullPath)
 						isStale = now - stat.mtimeMs > oneHourMs
-					} catch {
-						// ESRCH: process not found -- definitely stale
-						isStale = true
+					} catch (err) {
+						// EPERM: process exists but we lack permission -- it's alive.
+						// ESRCH: process not found -- definitely stale.
+						// All other errors: treat as stale (safe default).
+						const code = (err as NodeJS.ErrnoException).code
+						if (code === 'EPERM') {
+							// Process is alive; still check age as secondary guard
+							try {
+								const stat = statSync(fullPath)
+								isStale = now - stat.mtimeMs > oneHourMs
+							} catch {
+								isStale = true
+							}
+						} else {
+							// ESRCH or unknown error: treat as stale
+							isStale = true
+						}
 					}
 				} else {
 					// No PID in name -- check age only (legacy format)
@@ -168,7 +183,7 @@ export async function checkIsShallow(gitRoot: string): Promise<boolean | null> {
  * @param issues - Structured detection issues array
  * @returns The human-readable error string, or undefined if no issues
  */
-function issuestoDetectionError(
+function issuesToDetectionError(
 	issues: readonly DetectionIssue[],
 ): string | undefined {
 	if (issues.length === 0) return undefined
@@ -223,16 +238,17 @@ export async function detectMergeStatus(
 			merged: false,
 			commitsAhead: -1,
 			commitsBehind: -1,
-			detectionError: issuestoDetectionError(issues),
+			detectionError: issuesToDetectionError(issues),
 			issues,
 		}
 	}
 
-	const envTimeoutMs = process.env.SIDE_QUEST_DETECTION_TIMEOUT_MS
 	const defaultTimeoutMs = 5000
 	const timeout =
 		options.timeout ??
-		(envTimeoutMs !== undefined ? Number(envTimeoutMs) : defaultTimeoutMs)
+		parseEnvInt('SIDE_QUEST_DETECTION_TIMEOUT_MS', defaultTimeoutMs, {
+			min: 1,
+		})
 	const maxCommitsForSquashDetection =
 		options.maxCommitsForSquashDetection ?? 50
 	const signal = options.signal
@@ -253,7 +269,7 @@ export async function detectMergeStatus(
 			merged: false,
 			commitsAhead: -1,
 			commitsBehind: -1,
-			detectionError: issuestoDetectionError(issues),
+			detectionError: issuesToDetectionError(issues),
 			issues,
 		}
 	}
@@ -280,7 +296,7 @@ export async function detectMergeStatus(
 				merged: false,
 				commitsAhead: -1,
 				commitsBehind: -1,
-				detectionError: issuestoDetectionError(issues),
+				detectionError: issuesToDetectionError(issues),
 				issues,
 			}
 		}
@@ -307,419 +323,58 @@ export async function detectMergeStatus(
 		)
 	}
 
-	// Resolve target branch if not provided
-	const target = targetBranch ?? (await getMainBranch(gitRoot))
-
-	// Fully qualified refs
-	const branchRef = toLocalBranchRef(branch)
-	const targetRef = toTargetRef(target)
-
-	const detectionStart = Date.now()
-	debugLog('detection:start', {
-		branch,
-		target,
-		timeout,
-		maxCommitsForSquashDetection,
-		shallowOk,
-		isShallow: options.isShallow,
-	})
-
-	// Layer 1: Ancestor check -- thread signal so subprocess terminates on abort
-	const layer1Start = Date.now()
-	const ancestorResult = await spawnAndCollect(
-		['git', 'merge-base', '--is-ancestor', branchRef, targetRef],
-		{ cwd: gitRoot, signal },
-	)
-
-	if (ancestorResult.exitCode === 0) {
-		// Branch is an ancestor of target - standard merge or rebase
-		const counts = await getAheadBehindCounts(
-			gitRoot,
-			branchRef,
-			targetRef,
-			signal,
-		)
-		const layer1Duration = Date.now() - layer1Start
-		debugLog('layer1:result', {
-			branch,
-			merged: true,
-			mergeBase: 'ancestor',
-			durationMs: layer1Duration,
-		})
-		const result: MergeDetectionResult = {
-			merged: true,
-			mergeMethod: 'ancestor',
-			commitsAhead: counts.ahead,
-			commitsBehind: counts.behind,
-			...(issues.length > 0
-				? {
-						detectionError: issuestoDetectionError(issues),
-						issues: issues as readonly DetectionIssue[],
-					}
-				: {}),
-		}
-		debugLog('detection:complete', {
-			branch,
-			merged: result.merged,
-			mergeMethod: result.mergeMethod,
-			commitsAhead: result.commitsAhead,
-			commitsBehind: result.commitsBehind,
-			totalDurationMs: Date.now() - detectionStart,
-			issueCount: issues.length,
-		})
-		return result
-	}
-
-	if (ancestorResult.exitCode >= 128) {
-		// Fatal error (invalid ref, etc)
-		const errorMsg = `merge-base failed: ${ancestorResult.stderr.trim()}`
-		issues.push(
-			createDetectionIssue(
-				DETECTION_CODES.MERGE_BASE_FAILED,
-				'error',
-				'layer1',
-				errorMsg,
-				false,
-			),
-		)
-		const layer1Duration = Date.now() - layer1Start
-		debugLog('layer1:result', {
-			branch,
-			merged: false,
-			error: errorMsg,
-			durationMs: layer1Duration,
-		})
-		const result: MergeDetectionResult = {
-			merged: false,
-			commitsAhead: 0,
-			commitsBehind: 0,
-			detectionError: issuestoDetectionError(issues),
-			issues: issues as readonly DetectionIssue[],
-		}
-		debugLog('detection:complete', {
-			branch,
-			merged: result.merged,
-			totalDurationMs: Date.now() - detectionStart,
-			issueCount: issues.length,
-		})
-		return result
-	}
-
-	const layer1Duration = Date.now() - layer1Start
-	debugLog('layer1:result', {
-		branch,
-		merged: false,
-		mergeBase: 'not-ancestor',
-		durationMs: layer1Duration,
-	})
-
-	// Layer 2: Ahead/behind counts (always needed) -- thread signal
-	const layer2Start = Date.now()
-	const counts = await getAheadBehindCounts(
-		gitRoot,
-		branchRef,
-		targetRef,
-		signal,
-	)
-	const layer2Duration = Date.now() - layer2Start
-	debugLog('layer2:result', {
-		branch,
-		commitsAhead: counts.ahead,
-		commitsBehind: counts.behind,
-		durationMs: layer2Duration,
-	})
-
-	// Layer 3: Squash detection (conditional)
-	const shouldCheckSquash =
-		process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1' &&
-		counts.ahead <= maxCommitsForSquashDetection
-
-	if (!shouldCheckSquash) {
-		// Note: when NO_SQUASH_DETECTION=1, squash detection is silently skipped.
-		// We do NOT add a detectionError here (backward compat: existing callers
-		// rely on detectionError being undefined for the squash-skip path).
-		// The issues array may contain earlier warnings (e.g. shallow-check-failed).
-		const result: MergeDetectionResult = {
-			merged: false,
-			commitsAhead: counts.ahead,
-			commitsBehind: counts.behind,
-			...(issues.length > 0
-				? {
-						detectionError: issuestoDetectionError(issues),
-						issues: issues as readonly DetectionIssue[],
-					}
-				: {}),
-		}
-		debugLog('detection:complete', {
-			branch,
-			merged: result.merged,
-			commitsAhead: result.commitsAhead,
-			commitsBehind: result.commitsBehind,
-			totalDurationMs: Date.now() - detectionStart,
-			issueCount: issues.length,
-		})
-		return result
-	}
-
-	// Find merge-base for synthetic commit parent -- thread signal
-	const mergeBaseResult = await spawnAndCollect(
-		['git', 'merge-base', branchRef, targetRef],
-		{ cwd: gitRoot, signal },
-	)
-
-	if (mergeBaseResult.exitCode !== 0) {
-		const errorMsg = `merge-base lookup failed: ${mergeBaseResult.stderr.trim()}`
-		issues.push(
-			createDetectionIssue(
-				DETECTION_CODES.MERGE_BASE_LOOKUP_FAILED,
-				'warning',
-				'layer2',
-				errorMsg,
-				true,
-			),
-		)
-		const result: MergeDetectionResult = {
-			merged: false,
-			commitsAhead: counts.ahead,
-			commitsBehind: counts.behind,
-			detectionError: issuestoDetectionError(issues),
-			issues: issues as readonly DetectionIssue[],
-		}
-		debugLog('detection:complete', {
-			branch,
-			merged: result.merged,
-			totalDurationMs: Date.now() - detectionStart,
-			issueCount: issues.length,
-		})
-		return result
-	}
-
-	const mergeBase = mergeBaseResult.stdout.trim()
-
-	debugLog('layer3:start', { branch, target, timeout })
-
-	const objectEnvResult = await createIsolatedObjectEnv(gitRoot, signal)
-	if ('detectionError' in objectEnvResult) {
-		issues.push(
-			createDetectionIssue(
-				DETECTION_CODES.GIT_PATH_FAILED,
-				'warning',
-				'layer3-cherry',
-				objectEnvResult.detectionError,
-				true,
-			),
-		)
-		const result: MergeDetectionResult = {
-			merged: false,
-			commitsAhead: counts.ahead,
-			commitsBehind: counts.behind,
-			detectionError: issuestoDetectionError(issues),
-			issues: issues as readonly DetectionIssue[],
-		}
-		debugLog('detection:complete', {
-			branch,
-			merged: result.merged,
-			totalDurationMs: Date.now() - detectionStart,
-			issueCount: issues.length,
-		})
-		return result
-	}
-
-	const { env: objectEnv, cleanup } = objectEnvResult
-	const layer3Start = Date.now()
+	// Resolve target branch if not provided.
+	// Wrapped in a top-level try/catch so that AbortErrors thrown by
+	// spawnAndCollect in Layer 1 or Layer 2 (when the caller's signal fires)
+	// produce a graceful return rather than an unhandled exception.
+	// The inner Layer 3 try/catch remains as a nested handler for cherry.
 	try {
-		// Create synthetic squash commit with merge-base as parent -- thread signal
-		const commitTreeResult = await spawnAndCollect(
-			[
-				'git',
-				'commit-tree',
-				`${branchRef}^{tree}`,
-				'-p',
-				mergeBase,
-				'-m',
-				'squash detect',
-			],
-			{ cwd: gitRoot, env: objectEnv, signal },
-		)
+		const target = targetBranch ?? (await getMainBranch(gitRoot))
 
-		if (commitTreeResult.exitCode !== 0) {
-			const errorMsg = `commit-tree failed: ${commitTreeResult.stderr.trim()}`
-			issues.push(
-				createDetectionIssue(
-					DETECTION_CODES.COMMIT_TREE_FAILED,
-					'warning',
-					'layer3-commit-tree',
-					errorMsg,
-					true,
-				),
-			)
-			const result: MergeDetectionResult = {
-				merged: false,
-				commitsAhead: counts.ahead,
-				commitsBehind: counts.behind,
-				detectionError: issuestoDetectionError(issues),
-				issues: issues as readonly DetectionIssue[],
-			}
-			debugLog('detection:complete', {
-				branch,
-				merged: result.merged,
-				totalDurationMs: Date.now() - detectionStart,
-				issueCount: issues.length,
-			})
-			return result
-		}
+		// Fully qualified refs
+		const branchRef = toLocalBranchRef(branch)
+		const targetRef = toTargetRef(target)
 
-		const syntheticSha = commitTreeResult.stdout.trim()
-
-		// Run cherry with timeout. Combine caller signal and local timeout so either
-		// can terminate the subprocess -- whichever fires first wins.
-		// We use spawnAndCollect directly so our composite signal isn't overwritten
-		// (spawnWithTimeout creates its own internal AbortController and overwrites
-		// the signal option, making it impossible to pass an external signal through).
-		//
-		// Why no batching across branches (issue #25):
-		// `git cherry` accepts exactly one upstream..head pair per invocation --
-		// there is no multi-branch mode. The only potentially batchable step is
-		// `git rev-parse --git-path objects` (the isolated object env setup above),
-		// which saves ~10ms per group. Against a per-branch total of ~60ms this
-		// is <17% -- within noise. `processInParallelChunks` already parallelizes
-		// across branches, so wall time scales with concurrency, not branch count.
-		// Full investigation: src/worktree/benchmarks/cherry-investigation.ts
-		const cherrySignal = signal
-			? AbortSignal.any([signal, AbortSignal.timeout(timeout)])
-			: AbortSignal.timeout(timeout)
-
-		let cherryTimedOut = false
-		let cherryRaw: { stdout: string; stderr: string; exitCode: number }
-		try {
-			cherryRaw = await spawnAndCollect(
-				['git', 'cherry', targetRef, syntheticSha],
-				{ cwd: gitRoot, env: objectEnv, signal: cherrySignal },
-			)
-		} catch {
-			// AbortError from cherrySignal (timeout or external abort)
-			cherryTimedOut = true
-			cherryRaw = { stdout: '', stderr: '', exitCode: -1 }
-		}
-
-		const cherryResult = { ...cherryRaw, timedOut: cherryTimedOut }
-		const layer3Duration = Date.now() - layer3Start
-
-		// Strict fail-closed validation
-		if (
-			cherryResult.timedOut ||
-			cherryResult.exitCode !== 0 ||
-			!cherryResult.stdout.trim()
-		) {
-			let cherryCode: string
-			let cherryMsg: string
-
-			if (cherryResult.timedOut) {
-				// Distinguish between abort from external signal vs local timeout
-				const isAbort = signal?.aborted
-				cherryCode = DETECTION_CODES.CHERRY_TIMEOUT
-				cherryMsg = isAbort
-					? `cherry aborted: ${signal?.reason ?? 'signal aborted'}`
-					: 'cherry timed out'
-			} else if (cherryResult.exitCode !== 0) {
-				cherryCode = DETECTION_CODES.CHERRY_FAILED
-				cherryMsg = `cherry exit code ${cherryResult.exitCode}`
-			} else {
-				cherryCode = DETECTION_CODES.CHERRY_EMPTY
-				cherryMsg = 'cherry empty output'
-			}
-
-			issues.push(
-				createDetectionIssue(
-					cherryCode,
-					'warning',
-					'layer3-cherry',
-					cherryMsg,
-					true,
-				),
-			)
-			debugLog('layer3:result', {
-				branch,
-				squashDetected: false,
-				durationMs: layer3Duration,
-				exitCode: cherryResult.exitCode,
-				timedOut: cherryResult.timedOut,
-			})
-			const result: MergeDetectionResult = {
-				merged: false,
-				commitsAhead: counts.ahead,
-				commitsBehind: counts.behind,
-				detectionError: issuestoDetectionError(issues),
-				issues: issues as readonly DetectionIssue[],
-			}
-			debugLog('detection:complete', {
-				branch,
-				merged: result.merged,
-				totalDurationMs: Date.now() - detectionStart,
-				issueCount: issues.length,
-			})
-			return result
-		}
-
-		// Validate cherry output format
-		const lines = cherryResult.stdout.trim().split('\n')
-		const cherryLinePattern = /^[+-] [0-9a-f]{40}$/
-
-		for (const line of lines) {
-			if (!cherryLinePattern.test(line)) {
-				const errorMsg = `cherry output invalid: ${line}`
-				issues.push(
-					createDetectionIssue(
-						DETECTION_CODES.CHERRY_INVALID,
-						'warning',
-						'layer3-cherry',
-						errorMsg,
-						true,
-					),
-				)
-				debugLog('layer3:result', {
-					branch,
-					squashDetected: false,
-					durationMs: Date.now() - layer3Start,
-					exitCode: cherryResult.exitCode,
-					error: errorMsg,
-				})
-				const result: MergeDetectionResult = {
-					merged: false,
-					commitsAhead: counts.ahead,
-					commitsBehind: counts.behind,
-					detectionError: issuestoDetectionError(issues),
-					issues: issues as readonly DetectionIssue[],
-				}
-				debugLog('detection:complete', {
-					branch,
-					merged: result.merged,
-					totalDurationMs: Date.now() - detectionStart,
-					issueCount: issues.length,
-				})
-				return result
-			}
-		}
-
-		// Check if all commits are integrated (all lines start with '- ')
-		const allIntegrated = lines.every((line) => line.startsWith('- '))
-
-		debugLog('layer3:result', {
+		const detectionStart = Date.now()
+		debugLog('detection:start', {
 			branch,
-			squashDetected: allIntegrated,
-			durationMs: layer3Duration,
-			exitCode: cherryResult.exitCode,
+			target,
+			timeout,
+			maxCommitsForSquashDetection,
+			shallowOk,
+			isShallow: options.isShallow,
 		})
 
-		if (allIntegrated) {
+		// Layer 1: Ancestor check -- thread signal so subprocess terminates on abort
+		const layer1Start = Date.now()
+		const ancestorResult = await spawnAndCollect(
+			['git', 'merge-base', '--is-ancestor', branchRef, targetRef],
+			{ cwd: gitRoot, signal },
+		)
+
+		if (ancestorResult.exitCode === 0) {
+			// Branch is an ancestor of target - standard merge or rebase
+			const counts = await getAheadBehindCounts(
+				gitRoot,
+				branchRef,
+				targetRef,
+				signal,
+			)
+			const layer1Duration = Date.now() - layer1Start
+			debugLog('layer1:result', {
+				branch,
+				merged: true,
+				mergeBase: 'ancestor',
+				durationMs: layer1Duration,
+			})
 			const result: MergeDetectionResult = {
 				merged: true,
-				mergeMethod: 'squash',
+				mergeMethod: 'ancestor',
 				commitsAhead: counts.ahead,
 				commitsBehind: counts.behind,
 				...(issues.length > 0
 					? {
-							detectionError: issuestoDetectionError(issues),
+							detectionError: issuesToDetectionError(issues),
 							issues: issues as readonly DetectionIssue[],
 						}
 					: {}),
@@ -735,30 +390,421 @@ export async function detectMergeStatus(
 			})
 			return result
 		}
-	} finally {
-		await cleanup()
-	}
 
-	const result: MergeDetectionResult = {
-		merged: false,
-		commitsAhead: counts.ahead,
-		commitsBehind: counts.behind,
-		...(issues.length > 0
-			? {
-					detectionError: issuestoDetectionError(issues),
+		if (ancestorResult.exitCode >= 128) {
+			// Fatal error (invalid ref, etc)
+			const errorMsg = `merge-base failed: ${ancestorResult.stderr.trim()}`
+			issues.push(
+				createDetectionIssue(
+					DETECTION_CODES.MERGE_BASE_FAILED,
+					'error',
+					'layer1',
+					errorMsg,
+					false,
+				),
+			)
+			const layer1Duration = Date.now() - layer1Start
+			debugLog('layer1:result', {
+				branch,
+				merged: false,
+				error: errorMsg,
+				durationMs: layer1Duration,
+			})
+			const result: MergeDetectionResult = {
+				merged: false,
+				commitsAhead: 0,
+				commitsBehind: 0,
+				detectionError: issuesToDetectionError(issues),
+				issues: issues as readonly DetectionIssue[],
+			}
+			debugLog('detection:complete', {
+				branch,
+				merged: result.merged,
+				totalDurationMs: Date.now() - detectionStart,
+				issueCount: issues.length,
+			})
+			return result
+		}
+
+		const layer1Duration = Date.now() - layer1Start
+		debugLog('layer1:result', {
+			branch,
+			merged: false,
+			mergeBase: 'not-ancestor',
+			durationMs: layer1Duration,
+		})
+
+		// Layer 2: Ahead/behind counts (always needed) -- thread signal
+		const layer2Start = Date.now()
+		const counts = await getAheadBehindCounts(
+			gitRoot,
+			branchRef,
+			targetRef,
+			signal,
+		)
+		const layer2Duration = Date.now() - layer2Start
+		debugLog('layer2:result', {
+			branch,
+			commitsAhead: counts.ahead,
+			commitsBehind: counts.behind,
+			durationMs: layer2Duration,
+		})
+
+		// Layer 3: Squash detection (conditional)
+		const shouldCheckSquash =
+			process.env.SIDE_QUEST_NO_SQUASH_DETECTION !== '1' &&
+			counts.ahead <= maxCommitsForSquashDetection
+
+		if (!shouldCheckSquash) {
+			// Note: when NO_SQUASH_DETECTION=1, squash detection is silently skipped.
+			// We do NOT add a detectionError here (backward compat: existing callers
+			// rely on detectionError being undefined for the squash-skip path).
+			// The issues array may contain earlier warnings (e.g. shallow-check-failed).
+			const result: MergeDetectionResult = {
+				merged: false,
+				commitsAhead: counts.ahead,
+				commitsBehind: counts.behind,
+				...(issues.length > 0
+					? {
+							detectionError: issuesToDetectionError(issues),
+							issues: issues as readonly DetectionIssue[],
+						}
+					: {}),
+			}
+			debugLog('detection:complete', {
+				branch,
+				merged: result.merged,
+				commitsAhead: result.commitsAhead,
+				commitsBehind: result.commitsBehind,
+				totalDurationMs: Date.now() - detectionStart,
+				issueCount: issues.length,
+			})
+			return result
+		}
+
+		// Find merge-base for synthetic commit parent -- thread signal
+		const mergeBaseResult = await spawnAndCollect(
+			['git', 'merge-base', branchRef, targetRef],
+			{ cwd: gitRoot, signal },
+		)
+
+		if (mergeBaseResult.exitCode !== 0) {
+			const errorMsg = `merge-base lookup failed: ${mergeBaseResult.stderr.trim()}`
+			issues.push(
+				createDetectionIssue(
+					DETECTION_CODES.MERGE_BASE_LOOKUP_FAILED,
+					'warning',
+					'layer2',
+					errorMsg,
+					true,
+				),
+			)
+			const result: MergeDetectionResult = {
+				merged: false,
+				commitsAhead: counts.ahead,
+				commitsBehind: counts.behind,
+				detectionError: issuesToDetectionError(issues),
+				issues: issues as readonly DetectionIssue[],
+			}
+			debugLog('detection:complete', {
+				branch,
+				merged: result.merged,
+				totalDurationMs: Date.now() - detectionStart,
+				issueCount: issues.length,
+			})
+			return result
+		}
+
+		const mergeBase = mergeBaseResult.stdout.trim()
+
+		debugLog('layer3:start', { branch, target, timeout })
+
+		const objectEnvResult = await createIsolatedObjectEnv(gitRoot, signal)
+		if ('detectionError' in objectEnvResult) {
+			issues.push(
+				createDetectionIssue(
+					DETECTION_CODES.GIT_PATH_FAILED,
+					'warning',
+					'layer3-cherry',
+					objectEnvResult.detectionError,
+					true,
+				),
+			)
+			const result: MergeDetectionResult = {
+				merged: false,
+				commitsAhead: counts.ahead,
+				commitsBehind: counts.behind,
+				detectionError: issuesToDetectionError(issues),
+				issues: issues as readonly DetectionIssue[],
+			}
+			debugLog('detection:complete', {
+				branch,
+				merged: result.merged,
+				totalDurationMs: Date.now() - detectionStart,
+				issueCount: issues.length,
+			})
+			return result
+		}
+
+		const { env: objectEnv, cleanup } = objectEnvResult
+		const layer3Start = Date.now()
+		try {
+			// Create synthetic squash commit with merge-base as parent -- thread signal
+			const commitTreeResult = await spawnAndCollect(
+				[
+					'git',
+					'commit-tree',
+					`${branchRef}^{tree}`,
+					'-p',
+					mergeBase,
+					'-m',
+					'squash detect',
+				],
+				{ cwd: gitRoot, env: objectEnv, signal },
+			)
+
+			if (commitTreeResult.exitCode !== 0) {
+				const errorMsg = `commit-tree failed: ${commitTreeResult.stderr.trim()}`
+				issues.push(
+					createDetectionIssue(
+						DETECTION_CODES.COMMIT_TREE_FAILED,
+						'warning',
+						'layer3-commit-tree',
+						errorMsg,
+						true,
+					),
+				)
+				const result: MergeDetectionResult = {
+					merged: false,
+					commitsAhead: counts.ahead,
+					commitsBehind: counts.behind,
+					detectionError: issuesToDetectionError(issues),
 					issues: issues as readonly DetectionIssue[],
 				}
-			: {}),
+				debugLog('detection:complete', {
+					branch,
+					merged: result.merged,
+					totalDurationMs: Date.now() - detectionStart,
+					issueCount: issues.length,
+				})
+				return result
+			}
+
+			const syntheticSha = commitTreeResult.stdout.trim()
+
+			// Run cherry with timeout. Combine caller signal and local timeout so either
+			// can terminate the subprocess -- whichever fires first wins.
+			// We use spawnAndCollect directly so our composite signal isn't overwritten
+			// (spawnWithTimeout creates its own internal AbortController and overwrites
+			// the signal option, making it impossible to pass an external signal through).
+			//
+			// Why no batching across branches (issue #25):
+			// `git cherry` accepts exactly one upstream..head pair per invocation --
+			// there is no multi-branch mode. The only potentially batchable step is
+			// `git rev-parse --git-path objects` (the isolated object env setup above),
+			// which saves ~10ms per group. Against a per-branch total of ~60ms this
+			// is <17% -- within noise. `processInParallelChunks` already parallelizes
+			// across branches, so wall time scales with concurrency, not branch count.
+			// Full investigation: src/worktree/benchmarks/cherry-investigation.ts
+			const cherrySignal = signal
+				? AbortSignal.any([signal, AbortSignal.timeout(timeout)])
+				: AbortSignal.timeout(timeout)
+
+			let cherryTimedOut = false
+			let cherryRaw: { stdout: string; stderr: string; exitCode: number }
+			try {
+				cherryRaw = await spawnAndCollect(
+					['git', 'cherry', targetRef, syntheticSha],
+					{ cwd: gitRoot, env: objectEnv, signal: cherrySignal },
+				)
+			} catch {
+				// AbortError from cherrySignal (timeout or external abort)
+				cherryTimedOut = true
+				cherryRaw = { stdout: '', stderr: '', exitCode: -1 }
+			}
+
+			const cherryResult = { ...cherryRaw, timedOut: cherryTimedOut }
+			const layer3Duration = Date.now() - layer3Start
+
+			// Strict fail-closed validation
+			if (
+				cherryResult.timedOut ||
+				cherryResult.exitCode !== 0 ||
+				!cherryResult.stdout.trim()
+			) {
+				let cherryCode: string
+				let cherryMsg: string
+
+				if (cherryResult.timedOut) {
+					// Distinguish between abort from external signal vs local timeout
+					const isAbort = signal?.aborted
+					cherryCode = DETECTION_CODES.CHERRY_TIMEOUT
+					cherryMsg = isAbort
+						? `cherry aborted: ${signal?.reason ?? 'signal aborted'}`
+						: 'cherry timed out'
+				} else if (cherryResult.exitCode !== 0) {
+					cherryCode = DETECTION_CODES.CHERRY_FAILED
+					cherryMsg = `cherry exit code ${cherryResult.exitCode}`
+				} else {
+					cherryCode = DETECTION_CODES.CHERRY_EMPTY
+					cherryMsg = 'cherry empty output'
+				}
+
+				issues.push(
+					createDetectionIssue(
+						cherryCode,
+						'warning',
+						'layer3-cherry',
+						cherryMsg,
+						true,
+					),
+				)
+				debugLog('layer3:result', {
+					branch,
+					squashDetected: false,
+					durationMs: layer3Duration,
+					exitCode: cherryResult.exitCode,
+					timedOut: cherryResult.timedOut,
+				})
+				const result: MergeDetectionResult = {
+					merged: false,
+					commitsAhead: counts.ahead,
+					commitsBehind: counts.behind,
+					detectionError: issuesToDetectionError(issues),
+					issues: issues as readonly DetectionIssue[],
+				}
+				debugLog('detection:complete', {
+					branch,
+					merged: result.merged,
+					totalDurationMs: Date.now() - detectionStart,
+					issueCount: issues.length,
+				})
+				return result
+			}
+
+			// Validate cherry output format
+			const lines = cherryResult.stdout.trim().split('\n')
+			const cherryLinePattern = /^[+-] [0-9a-f]{40}$/
+
+			for (const line of lines) {
+				if (!cherryLinePattern.test(line)) {
+					const errorMsg = `cherry output invalid: ${line}`
+					issues.push(
+						createDetectionIssue(
+							DETECTION_CODES.CHERRY_INVALID,
+							'warning',
+							'layer3-cherry',
+							errorMsg,
+							true,
+						),
+					)
+					debugLog('layer3:result', {
+						branch,
+						squashDetected: false,
+						durationMs: Date.now() - layer3Start,
+						exitCode: cherryResult.exitCode,
+						error: errorMsg,
+					})
+					const result: MergeDetectionResult = {
+						merged: false,
+						commitsAhead: counts.ahead,
+						commitsBehind: counts.behind,
+						detectionError: issuesToDetectionError(issues),
+						issues: issues as readonly DetectionIssue[],
+					}
+					debugLog('detection:complete', {
+						branch,
+						merged: result.merged,
+						totalDurationMs: Date.now() - detectionStart,
+						issueCount: issues.length,
+					})
+					return result
+				}
+			}
+
+			// Check if all commits are integrated (all lines start with '- ')
+			const allIntegrated = lines.every((line) => line.startsWith('- '))
+
+			debugLog('layer3:result', {
+				branch,
+				squashDetected: allIntegrated,
+				durationMs: layer3Duration,
+				exitCode: cherryResult.exitCode,
+			})
+
+			if (allIntegrated) {
+				const result: MergeDetectionResult = {
+					merged: true,
+					mergeMethod: 'squash',
+					commitsAhead: counts.ahead,
+					commitsBehind: counts.behind,
+					...(issues.length > 0
+						? {
+								detectionError: issuesToDetectionError(issues),
+								issues: issues as readonly DetectionIssue[],
+							}
+						: {}),
+				}
+				debugLog('detection:complete', {
+					branch,
+					merged: result.merged,
+					mergeMethod: result.mergeMethod,
+					commitsAhead: result.commitsAhead,
+					commitsBehind: result.commitsBehind,
+					totalDurationMs: Date.now() - detectionStart,
+					issueCount: issues.length,
+				})
+				return result
+			}
+		} finally {
+			await cleanup()
+		}
+
+		const result: MergeDetectionResult = {
+			merged: false,
+			commitsAhead: counts.ahead,
+			commitsBehind: counts.behind,
+			...(issues.length > 0
+				? {
+						detectionError: issuesToDetectionError(issues),
+						issues: issues as readonly DetectionIssue[],
+					}
+				: {}),
+		}
+		debugLog('detection:complete', {
+			branch,
+			merged: result.merged,
+			commitsAhead: result.commitsAhead,
+			commitsBehind: result.commitsBehind,
+			totalDurationMs: Date.now() - detectionStart,
+			issueCount: issues.length,
+		})
+		return result
+	} catch (err) {
+		// AbortError from Layer 1 or Layer 2 subprocess: signal fired before the
+		// git subprocess completed. Convert to a graceful result instead of
+		// letting the exception propagate as an unhandled rejection.
+		// Layer 3 abort is handled by its own inner try/catch.
+		if (err instanceof Error && err.name === 'AbortError') {
+			const abortIssues: readonly DetectionIssue[] = [
+				createDetectionIssue(
+					DETECTION_CODES.DETECTION_ABORTED,
+					'error',
+					'layer1-layer2',
+					`detection aborted: ${err.message}`,
+					false,
+				),
+			]
+			return {
+				merged: false,
+				commitsAhead: -1,
+				commitsBehind: -1,
+				detectionError: issuesToDetectionError(abortIssues),
+				issues: abortIssues,
+			}
+		}
+		throw err
 	}
-	debugLog('detection:complete', {
-		branch,
-		merged: result.merged,
-		commitsAhead: result.commitsAhead,
-		commitsBehind: result.commitsBehind,
-		totalDurationMs: Date.now() - detectionStart,
-		issueCount: issues.length,
-	})
-	return result
 }
 
 interface IsolatedObjectEnv {

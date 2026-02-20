@@ -48,6 +48,13 @@ export const DETECTION_CODES = {
 	GIT_PATH_FAILED: 'GIT_PATH_FAILED',
 	DETECTION_DISABLED: 'DETECTION_DISABLED',
 	ENRICHMENT_FAILED: 'ENRICHMENT_FAILED',
+	/**
+	 * The caller's AbortSignal fired while a git subprocess in Layer 1 or
+	 * Layer 2 was running. The subprocess threw an AbortError, which was
+	 * caught by the top-level try/catch in detectMergeStatus and converted
+	 * to a graceful return rather than an unhandled exception.
+	 */
+	DETECTION_ABORTED: 'DETECTION_ABORTED',
 } as const
 
 /**

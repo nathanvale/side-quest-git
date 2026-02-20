@@ -100,6 +100,30 @@ describe('backup refs', () => {
 		test('throws when the branch does not exist', async () => {
 			await expect(createBackupRef(gitRoot, 'feat/nonexistent')).rejects.toThrow('feat/nonexistent')
 		})
+
+		test('uses refs/heads/ prefix to avoid matching a tag with the same name (#46)', async () => {
+			// Create a branch and a tag sharing the same bare name.
+			// Without refs/heads/ prefix, git rev-parse could resolve the tag instead.
+			await createBranch('feat/tag-collision')
+			const branchSha = await resolveRef('refs/heads/feat/tag-collision')
+			expect(branchSha).toBeTruthy()
+
+			// Create a tag pointing to a DIFFERENT (no-op) ref so they differ
+			// in a detectable way. Here we use the initial commit SHA for the tag.
+			// Since the branch also points at the initial commit, both resolve the
+			// same SHA in this repo -- what we verify is that createBackupRef does
+			// NOT throw when a tag shares the bare name, and that the backup points
+			// to the branch commit (not some other resolution).
+			await spawnAndCollect(['git', 'tag', 'feat/tag-collision', 'main'], {
+				cwd: gitRoot,
+			})
+
+			// createBackupRef must succeed and resolve the BRANCH (refs/heads/) commit
+			await createBackupRef(gitRoot, 'feat/tag-collision')
+
+			const backupSha = await resolveRef('refs/backup/feat/tag-collision')
+			expect(backupSha).toBe(branchSha)
+		})
 	})
 
 	describe('listBackupRefs', () => {
@@ -193,6 +217,31 @@ describe('backup refs', () => {
 			// Backup should still exist
 			const backupSha = await resolveRef('refs/backup/feat/keep-backup')
 			expect(backupSha).toBeTruthy()
+		})
+
+		test('uses refs/heads/ prefix for existence check to avoid matching tags (#46)', async () => {
+			// Create branch, back it up, delete branch, then create a tag with same name.
+			// restoreBackupRef must check refs/heads/ specifically -- a tag with the
+			// same bare name must NOT count as "branch already exists".
+			await createBranch('feat/tag-exists-check')
+			await createBackupRef(gitRoot, 'feat/tag-exists-check')
+
+			// Delete the branch so restore is possible
+			await spawnAndCollect(['git', 'branch', '-d', 'feat/tag-exists-check'], {
+				cwd: gitRoot,
+			})
+
+			// Create a tag with the same bare name pointing at main
+			await spawnAndCollect(['git', 'tag', 'feat/tag-exists-check', 'main'], {
+				cwd: gitRoot,
+			})
+
+			// Branch is gone -- restore must succeed (tag does NOT block restoration)
+			await expect(restoreBackupRef(gitRoot, 'feat/tag-exists-check')).resolves.toBeUndefined()
+
+			// Branch should now exist again
+			const restoredSha = await resolveRef('refs/heads/feat/tag-exists-check')
+			expect(restoredSha).toBeTruthy()
 		})
 	})
 

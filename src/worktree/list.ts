@@ -8,6 +8,7 @@ import { getMainBranch } from '../git/main-branch.js'
 import { DEFAULT_CONCURRENCY } from './constants.js'
 import { debugLog } from './debug.js'
 import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
+import { parseEnvInt } from './env.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import { buildStatusString } from './status-string.js'
 import type { WorktreeInfo } from './types.js'
@@ -74,11 +75,13 @@ export async function listWorktrees(
 	// A hung git process (e.g. in a network-mounted repo) would otherwise block
 	// the entire chunk. The timeout is intentionally generous -- it is a safety
 	// net, not a performance target.
-	const itemTimeoutMs = Number(process.env.SIDE_QUEST_ITEM_TIMEOUT_MS ?? 10000)
+	const itemTimeoutMs = parseEnvInt('SIDE_QUEST_ITEM_TIMEOUT_MS', 10000, {
+		min: 1,
+	})
 
 	const concurrency =
 		options.concurrency ??
-		Number(process.env.SIDE_QUEST_CONCURRENCY ?? DEFAULT_CONCURRENCY)
+		parseEnvInt('SIDE_QUEST_CONCURRENCY', DEFAULT_CONCURRENCY, { min: 1 })
 
 	const total = entries.length
 	let processed = 0

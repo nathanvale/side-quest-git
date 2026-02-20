@@ -335,4 +335,75 @@ describe('worktree CLI', () => {
 		expect(parsed.health.total).toBe(0)
 		expect(parsed.health.allFailed).toBe(false)
 	})
+
+	test('list: exits 0 and flushes JSON output on success (#48)', async () => {
+		// Verify that list output is fully flushed and exit code is 0 on success.
+		// This regression test ensures process.exitCode = 1; return pattern does
+		// not prematurely truncate output when allFailed is false.
+		const result = await spawnAndCollect(['bun', 'run', CLI_PATH, 'worktree', 'list', '--all'], {
+			cwd: tmpDir,
+		})
+
+		// Exit code must be 0
+		expect(result.exitCode).toBe(0)
+		// stdout must be valid, non-empty JSON
+		const parsed = JSON.parse(result.stdout)
+		expect(Array.isArray(parsed.worktrees)).toBe(true)
+		// Critically: the output must be fully flushed (not truncated)
+		expect(parsed.health).toBeDefined()
+	})
+
+	test('orphans: exits 0 and flushes JSON output on success (#48)', async () => {
+		// Mirror of the list test for the orphans command, which also uses
+		// process.exitCode = 1; return when allFailed is true.
+		const result = await spawnAndCollect(['bun', 'run', CLI_PATH, 'worktree', 'orphans'], {
+			cwd: tmpDir,
+		})
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(Array.isArray(parsed.orphans)).toBe(true)
+		expect(parsed.health).toBeDefined()
+	})
+
+	test('list --shallow-ok: flag is accepted and command succeeds (#51)', async () => {
+		// Verify that the --shallow-ok flag is wired up and does not cause an error.
+		// This ensures the flag passes through the CLI arg parsing and reaches
+		// listWorktrees without being rejected as an unknown option.
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'list', '--shallow-ok'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(Array.isArray(parsed.worktrees)).toBe(true)
+	})
+
+	test('recover: lists backup refs as JSON array when no backups exist (#51)', async () => {
+		// Verify the recover subcommand is wired up and returns a JSON array.
+		// With no prior deletions in the test repo there are no backup refs,
+		// so the output is an empty array -- but the command must exit 0.
+		const result = await spawnAndCollect(['bun', 'run', CLI_PATH, 'worktree', 'recover'], {
+			cwd: tmpDir,
+		})
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(Array.isArray(parsed)).toBe(true)
+	})
+
+	test('recover --cleanup: runs cleanup and returns cleaned/count fields (#51)', async () => {
+		// Verify the recover --cleanup subcommand is wired up and returns the
+		// expected shape. With no old backup refs the cleaned array is empty.
+		const result = await spawnAndCollect(
+			['bun', 'run', CLI_PATH, 'worktree', 'recover', '--cleanup'],
+			{ cwd: tmpDir },
+		)
+
+		expect(result.exitCode).toBe(0)
+		const parsed = JSON.parse(result.stdout)
+		expect(Array.isArray(parsed.cleaned)).toBe(true)
+		expect(typeof parsed.count).toBe('number')
+	})
 })

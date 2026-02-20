@@ -556,13 +556,17 @@ export async function runDetectionBenchmark(
 }
 
 // Allow direct invocation: bun src/worktree/benchmarks/detection-benchmark.ts [worktreeCount]
-const worktreeCountArg = process.argv[2] ? Number(process.argv[2]) : 6
-runDetectionBenchmark(worktreeCountArg)
-	.then((output) => {
-		process.stdout.write(JSON.stringify(output, null, 2))
-		process.stdout.write('\n')
-	})
-	.catch((err: unknown) => {
-		process.stderr.write(`[bench] fatal error: ${String(err)}\n`)
-		process.exit(1)
-	})
+// Guard prevents the benchmark from auto-running when the module is imported
+// by tests or other code -- only executes when run as the entry point.
+if (import.meta.main) {
+	const worktreeCountArg = process.argv[2] ? Number(process.argv[2]) : 6
+	runDetectionBenchmark(worktreeCountArg)
+		.then((output) => {
+			process.stdout.write(JSON.stringify(output, null, 2))
+			process.stdout.write('\n')
+		})
+		.catch((err: unknown) => {
+			process.stderr.write(`[bench] fatal error: ${String(err)}\n`)
+			process.exit(1)
+		})
+}

@@ -54,9 +54,11 @@ export async function createBackupRef(
 	gitRoot: string,
 	branch: string,
 ): Promise<void> {
-	// Resolve the current commit SHA for the branch
+	// Resolve the current commit SHA for the branch.
+	// Use refs/heads/<branch> to avoid accidentally matching a tag or other
+	// ref with the same name as the branch.
 	const resolveResult = await spawnAndCollect(
-		['git', 'rev-parse', '--verify', branch],
+		['git', 'rev-parse', '--verify', `refs/heads/${branch}`],
 		{ cwd: gitRoot },
 	)
 	if (resolveResult.exitCode !== 0) {
@@ -168,9 +170,10 @@ export async function restoreBackupRef(
 
 	const commit = resolveResult.stdout.trim()
 
-	// Check if the branch already exists -- refuse to clobber it
+	// Check if the branch already exists -- refuse to clobber it.
+	// Use refs/heads/<branch> to avoid matching tags with the same name.
 	const branchExistsResult = await spawnAndCollect(
-		['git', 'rev-parse', '--verify', branch],
+		['git', 'rev-parse', '--verify', `refs/heads/${branch}`],
 		{ cwd: gitRoot },
 	)
 	if (branchExistsResult.exitCode === 0) {
