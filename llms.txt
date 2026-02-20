@@ -1,0 +1,208 @@
+# @side-quest/git — LLM Context
+
+This file is the canonical LLM-facing context for this repository.
+
+## Purpose
+
+`@side-quest/git` hardens real-world git workflows where teams run many
+worktrees, merge with mixed strategies (merge/rebase/squash), and need safe
+automation with strong observability.
+
+It does not replace git; it adds:
+
+1. Safer defaults
+2. Structured machine-readable outputs
+3. Recovery paths for destructive operations
+4. Local telemetry for operational visibility
+
+## Architecture
+
+```text
+CLI / Hooks
+   |
+   +--> Safety + Context + Auto-commit + Cortex helpers
+   |
+   +--> Worktree engine (create/list/delete/clean/status/orphans/recover)
+            |
+            +--> Merge detection cascade (ancestor -> ahead/behind -> squash)
+            |
+            +--> Health metadata + structured issues
+   |
+   +--> Event bus (HTTP + WebSocket + ring buffer + optional JSONL)
+```
+
+Git CLI remains source of truth. This package composes git subprocesses and
+hardens failure, ambiguity, and cleanup edges.
+
+## Domain Map
+
+### 1) Worktree Lifecycle
+
+Owns create/list/status/sync/delete/clean/recover/orphans command flows.
+
+Core files:
+
+1. `src/worktree/cli.ts`
+2. `src/worktree/create.ts`
+3. `src/worktree/list.ts`
+4. `src/worktree/status.ts`
+5. `src/worktree/sync.ts`
+6. `src/worktree/delete.ts`
+7. `src/worktree/clean.ts`
+8. `src/worktree/orphans.ts`
+9. `src/worktree/backup.ts`
+10. `src/worktree/types.ts`
+
+Critical behaviors:
+
+1. `create` can attach to existing matching worktree.
+2. `clean` never deletes main worktree (even with `--force`).
+3. Branch deletion can create backup refs first (`refs/backup/*`).
+4. List/orphans return health metadata for systemic failure signaling.
+
+### 2) Merge Detection Engine
+
+Determines whether a branch is integrated into main, including squash merges.
+
+Core files:
+
+1. `src/worktree/merge-status.ts`
+2. `src/worktree/detection-issue.ts`
+3. `src/worktree/git-counts.ts`
+4. `src/worktree/status-string.ts`
+5. `src/worktree/list-health.ts`
+
+Cascade:
+
+1. `merge-base --is-ancestor` (fast)
+2. `rev-list --left-right --count` (ahead/behind)
+3. `commit-tree` + `git cherry` (squash-equivalence)
+
+Key invariants:
+
+1. `merged === (mergeMethod !== undefined)` when detection succeeds.
+2. Unknown/unreliable counts use sentinels, not silent coercion.
+3. Structured `issues` encode severity and count reliability.
+4. Single-entry detection failures should not collapse whole-list commands.
+
+### 3) Events and Observability
+
+Local telemetry bus for lifecycle visibility.
+
+Core files:
+
+1. `src/events/types.ts`
+2. `src/events/schema.ts`
+3. `src/events/server.ts`
+4. `src/events/store.ts`
+5. `src/events/client.ts`
+6. `src/events/emit.ts`
+7. `src/worktree/list-health.ts`
+8. `src/worktree/debug.ts`
+
+Runtime shape:
+
+1. Server writes PID/port discovery files keyed by repo.
+2. Producers emit events via `POST /events` (best effort).
+3. Consumers query (`GET /events`) or stream (`GET /ws`).
+4. Ring buffer bounds memory; optional JSONL provides local history.
+
+### 4) Safety and Guardrails
+
+Policy checks around risky commands and file edits.
+
+Core files:
+
+1. `src/safety/patterns.ts`
+2. `src/safety/check-command.ts`
+3. `src/safety/check-file-edit.ts`
+4. `src/safety/is-commit-command.ts`
+
+Current surface:
+
+1. Blocks destructive git command patterns (force push/reset/clean variants).
+2. Flags protected paths (e.g. credentials-like files, `.git/`).
+3. Detects commit intent and WIP-related patterns.
+
+### 5) Context and Automation Helpers
+
+Operator/agent workflow helpers with low coupling.
+
+Core files:
+
+1. `src/context/get-context.ts`
+2. `src/context/format-context.ts`
+3. `src/context/format-system-message.ts`
+4. `src/auto-commit/create-commit.ts`
+5. `src/auto-commit/commit-message.ts`
+6. `src/auto-commit/last-user-prompt.ts`
+7. `src/cortex/extract.ts`
+8. `src/cortex/patterns.ts`
+9. `src/logger/create-entry.ts`
+
+Behaviors:
+
+1. Context extraction for branch/status/recent commits.
+2. WIP auto-commit helpers for tracked changes.
+3. Transcript salience extraction for decision/learning/preference signals.
+4. Normalized command-log entry creation.
+
+### 6) Quality and Release Operations
+
+Ensures code ships with safety, consistency, and reproducibility.
+
+Core files:
+
+1. `package.json`
+2. `biome.json`
+3. `tsconfig.json`
+4. `CHANGELOG.md`
+5. `.github/workflows/pr-quality.yml`
+6. `.github/workflows/publish.yml`
+7. `.github/workflows/package-hygiene.yml`
+8. `.github/workflows/commitlint.yml`
+9. `.husky/pre-commit`
+10. `.husky/pre-push`
+
+Delivery flow:
+
+1. Local hooks guard formatting/linting.
+2. CI validates lint, typecheck, tests, and quality gates.
+3. Changesets drive version/changelog.
+4. Publish workflow controls release mode and npm publish.
+
+## Operational Controls (Env + Flags)
+
+Detection controls:
+
+1. `SIDE_QUEST_NO_DETECTION=1` (disable all detection)
+2. `SIDE_QUEST_NO_SQUASH_DETECTION=1` (disable layer-3 squash check)
+3. `SIDE_QUEST_SHALLOW_OK=1` or `--shallow-ok`
+4. `SIDE_QUEST_DETECTION_TIMEOUT_MS` or `--timeout`
+5. `SIDE_QUEST_ITEM_TIMEOUT_MS` (per-item enrichment timeout)
+
+Key command flags:
+
+1. `worktree create --base <ref> --no-install --no-fetch --no-attach`
+2. `worktree list --all --include-orphans --timeout <ms> --shallow-ok`
+3. `worktree check <branch> --timeout <ms> --shallow-ok`
+4. `worktree clean --dry-run --force --delete-branches --include-orphans`
+5. `worktree recover [<branch>] [--cleanup --max-age <days>]`
+
+## Known Risks / Dragons
+
+1. CLI JSON shape changes are contract changes for consumers.
+2. Path matching must stay exact (avoid prefix-collision bugs).
+3. Sentinel counts (e.g. `-1`) mean unknown/unreliable, not zero.
+4. Detection semantics directly affect delete/clean safety.
+5. Event emission is intentionally best-effort and can be lossy.
+6. Workflow edits are high-leverage and high-blast-radius.
+
+## Learning Order (Fastest Path)
+
+1. Worktree Lifecycle
+2. Merge Detection Engine
+3. Events and Observability
+4. Safety and Guardrails
+5. Context and Automation Helpers
+6. Quality and Release Operations
