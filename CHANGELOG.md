@@ -1,5 +1,86 @@
 # Changelog
 
+## 1.0.0
+
+### Major Changes
+
+- [#55](https://github.com/nathanvale/side-quest-git/pull/55) [`86bdeab`](https://github.com/nathanvale/side-quest-git/commit/86bdeab44e4567e10df7bb0c9131a2394a405190) Thanks [@nathanvale](https://github.com/nathanvale)! - Harden the `side-quest-git` CLI with agent-native contracts and strict invocation validation.
+
+  ### Breaking changes
+
+  - Success output is now wrapped as `{ status: "ok", data: ... }`
+  - Errors are now wrapped on stderr as `{ status: "error", error: { code, name, message } }`
+  - Unknown flags now fail with `E_USAGE` and exit code `2` (previously ignored)
+  - `--help` output is now generated from a centralized command registry
+  - Binary entrypoint moved to `dist/worktree/cli/index.js`
+
+  ### Added
+
+  - Typed exit codes and structured `CliError` model
+  - Global flags: `--jsonl`, `--quiet`, `--fields`, `--non-interactive`, `--help`
+  - `--fields` projection for token-efficient responses
+  - Modular command handlers under `src/worktree/cli/handlers/*`
+
+  ### Migration
+
+  Update JSON consumers to read through `.data`:
+
+  ```bash
+  # Before
+  bunx @side-quest/git worktree list --json | jq '.worktrees[]'
+
+  # After
+  bunx @side-quest/git worktree list --json | jq '.data.worktrees[]'
+  ```
+
+- [#53](https://github.com/nathanvale/side-quest-git/pull/53) [`bc594d5`](https://github.com/nathanvale/side-quest-git/commit/bc594d51997d16bcc31a80e07bce0958f315f6de) Thanks [@nathanvale](https://github.com/nathanvale)! - Major worktree lifecycle hardening and observability release.
+
+  ### Breaking change
+
+  `worktree list --json` output changed from a bare array to an object:
+
+  - `worktrees`: array of worktree entries (filtered by `--all` as before)
+  - `health`: enrichment health summary
+
+  When `--include-orphans` is supplied, output now also includes:
+
+  - `orphans`
+  - `orphanHealth`
+
+  ### Added
+
+  - Operational safety controls for detection:
+    - AbortSignal threading and timeout handling
+    - Full kill switch (`SIDE_QUEST_NO_DETECTION=1`)
+    - Per-item timeout guard (`SIDE_QUEST_ITEM_TIMEOUT_MS`)
+    - SIGTERM temp-dir cleanup resilience
+  - Detection and lifecycle enhancements:
+    - Structured detection issues (`issues`) with codes/severity
+    - `mergeMethod` propagation across list/status/delete/clean paths
+    - `commitsBehind` support in status strings
+    - `upstreamGone` detection for deleted remote tracking refs
+    - `--timeout` and `--shallow-ok` flags on detection-aware commands
+  - Recoverability improvements:
+    - Backup refs before branch deletion (`refs/backup/<branch>`)
+    - `worktree recover` command to list, restore, and clean up backup refs
+    - Backup retention based on ref-write/reflog timestamps
+  - Performance and observability:
+    - Configurable list/orphan concurrency
+    - Health metadata (`allFailed`, degraded/fatal counts)
+    - Detection benchmark tooling and debug logging hooks
+
+  ### Migration
+
+  Update scripts that parsed the old raw list array:
+
+  ```bash
+  # Before
+  bunx @side-quest/git worktree list --json | jq '.[]'
+
+  # After
+  bunx @side-quest/git worktree list --json | jq '.worktrees[]'
+  ```
+
 ## 0.4.1
 
 ### Patch Changes
