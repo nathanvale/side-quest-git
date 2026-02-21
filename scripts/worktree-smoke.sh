@@ -106,11 +106,12 @@ setup_git_repo() {
 		git remote add origin "${remote}"
 
 		echo "# Smoke Repo" > README.md
+		echo ".env" > .gitignore
 		echo "API_TOKEN=abc" > .env
 		mkdir -p .claude
 		echo "context v1" > .claude/context.md
 
-		git add README.md .claude/context.md
+		git add README.md .gitignore .claude/context.md
 		git commit -m "chore: initial" >/dev/null
 		git push -u origin main >/dev/null
 	)
@@ -323,11 +324,10 @@ run_shallow_suite() {
 		echo "line2" >> file.txt
 		git add file.txt
 		git commit -m "c2" >/dev/null
-		git init --bare "${remote}" >/dev/null
+		git init --bare -b main "${remote}" >/dev/null
 		git remote add origin "${remote}"
 		git push -u origin main >/dev/null
 	)
-
 	git clone --depth 1 "file://${remote}" "${clone}" >/dev/null
 	pushd "${clone}" >/dev/null
 		git config user.name "Smoke Tester"
