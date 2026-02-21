@@ -49,12 +49,21 @@ Top-level source domains (`src/*`):
 
 ## 4) CLI Contract (Authoritative)
 
-Binary: `side-quest-git` (mapped to `dist/worktree/cli.js`).
+Binary: `side-quest-git` (mapped to `dist/worktree/cli/index.js`).
 
 Top-level commands:
 
 1. `side-quest-git worktree <subcommand> ...`
 2. `side-quest-git events <start|tail> ...`
+
+Global flags accepted by all commands:
+
+1. `--json` (no-op compatibility flag; JSON is always returned)
+2. `--jsonl` (compact one-line JSON envelopes)
+3. `--quiet` (suppress stdout success envelopes)
+4. `--help` (auto-generated usage text)
+5. `--fields <a,b,c>` (dot-path projection against command data payload)
+6. `--non-interactive` (disable interactive behavior)
 
 ### Worktree subcommands
 
@@ -83,7 +92,7 @@ The worktree domain is the highest-risk and highest-value surface.
 
 ### 5.1 Core files
 
-1. `src/worktree/cli.ts`
+1. `src/worktree/cli/index.ts`
 2. `src/worktree/create.ts`
 3. `src/worktree/list.ts`
 4. `src/worktree/merge-status.ts`
@@ -131,14 +140,22 @@ Health contract (`src/worktree/list-health.ts`):
 
 ### 5.3 Command output contracts (important)
 
+All command successes are wrapped as:
+
+1. `{ status: "ok", data: <payload> }`
+
+All command errors are wrapped on stderr as:
+
+1. `{ status: "error", error: { code, name, message } }`
+
+Payload contracts inside `data`:
+
 1. `worktree list`:
    - default: `{ worktrees: WorktreeInfo[], health: ListHealthMetadata }`
    - with `--include-orphans`:
      `{ worktrees, orphans, health, orphanHealth }`
-   - CLI sets `process.exitCode = 1` when `health.allFailed === true`.
 2. `worktree orphans`:
    - `{ orphans: OrphanBranch[], health: ListHealthMetadata }`
-   - non-zero exit when orphan health is `allFailed`.
 3. `worktree status`:
    - `WorktreeStatus[]`
 4. `worktree create`:
@@ -401,7 +418,11 @@ When editing this repo:
 
 Breaking change already in-flight:
 
-1. `worktree list --json` changed from bare array to object with
+1. CLI success payloads are now wrapped:
+   `{ status: "ok", data: ... }`
+2. CLI errors are now wrapped on stderr:
+   `{ status: "error", error: { code, name, message } }`
+3. `worktree list` payload changed from bare array to object with
    `worktrees` + `health` (plus `orphans`/`orphanHealth` with
    `--include-orphans`).
 
@@ -412,12 +433,12 @@ Consumer migration pattern:
 bunx @side-quest/git worktree list --json | jq '.[]'
 
 # New
-bunx @side-quest/git worktree list --json | jq '.worktrees[]'
+bunx @side-quest/git worktree list --json | jq '.data.worktrees[]'
 ```
 
 ## 12) Fast Learning Path
 
-1. Read `src/worktree/cli.ts` for command contract and exit semantics.
+1. Read `src/worktree/cli/index.ts` for command contract and exit semantics.
 2. Read `src/worktree/list.ts` + `src/worktree/merge-status.ts` for the core
    detection pipeline.
 3. Read `src/worktree/delete.ts` + `src/worktree/clean.ts` +

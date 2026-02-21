@@ -48,8 +48,8 @@
 			"import": "./dist/worktree/index.js"
 		},
 		"./worktree/cli": {
-			"types": "./dist/worktree/cli.d.ts",
-			"import": "./dist/worktree/cli.js"
+			"types": "./dist/worktree/cli/index.d.ts",
+			"import": "./dist/worktree/cli/index.js"
 		},
 		"./events": {
 			"types": "./dist/events/index.d.ts",
@@ -148,6 +148,6 @@
 		]
 	},
 	"bin": {
-		"side-quest-git": "./dist/worktree/cli.js"
+		"side-quest-git": "./dist/worktree/cli/index.js"
 	}
 }

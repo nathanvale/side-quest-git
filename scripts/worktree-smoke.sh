@@ -21,10 +21,12 @@ fi
 if [[ -n "${SQ_GIT_CLI:-}" ]]; then
 	# shellcheck disable=SC2206
 	CLI=(${SQ_GIT_CLI})
+elif [[ -f "${REPO_ROOT}/dist/worktree/cli/index.js" ]]; then
+	CLI=(bun "${REPO_ROOT}/dist/worktree/cli/index.js")
 elif [[ -f "${REPO_ROOT}/dist/worktree/cli.js" ]]; then
 	CLI=(bun "${REPO_ROOT}/dist/worktree/cli.js")
 else
-	CLI=(bun "${REPO_ROOT}/src/worktree/cli.ts")
+	CLI=(bun "${REPO_ROOT}/src/worktree/cli/index.ts")
 fi
 
 for bin in git bun jq curl; do
@@ -56,7 +58,7 @@ assert_jq() {
 	local name="$1"
 	local json="$2"
 	local expr="$3"
-	if echo "${json}" | jq -e "${expr}" >/dev/null 2>&1; then
+	if echo "${json}" | jq -e "if (type == \"object\" and .status? == \"ok\" and has(\"data\")) then (.data | (${expr})) else (${expr}) end" >/dev/null 2>&1; then
 		record_pass "${name}"
 	else
 		echo "FAIL: ${name}"
