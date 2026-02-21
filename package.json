@@ -111,6 +111,7 @@
 		"release:snapshot:canary": "changeset version --snapshot canary && changeset publish --tag canary",
 		"security:audit": "npm audit",
 		"setup:protect": "bun scripts/setup-protect.ts",
+		"benchmark": "bun src/worktree/benchmarks/detection-benchmark.ts",
 		"test": "bun test --recursive",
 		"test:ci": "TF_BUILD=true bun test --recursive",
 		"test:coverage": "bun test --coverage",
@@ -119,7 +120,8 @@
 		"validate": "bun run lint && bun run typecheck && bun run build && TF_BUILD=true bun run test",
 		"version:gen": "bun run scripts/version-gen.ts",
 		"version:pre": "changeset version",
-		"watch:types": "tsc -p tsconfig.eslint.json --noEmit --watch"
+		"watch:types": "tsc -p tsconfig.eslint.json --noEmit --watch",
+		"smoke:worktree": "bash ./scripts/worktree-smoke.sh"
 	},
 	"dependencies": {
 		"@side-quest/core": "^0.4.0"

@@ -121,4 +121,83 @@ describe('buildStatusString', () => {
 			}),
 		).toBe('unknown')
 	})
+
+	test('only behind: branch behind main with no local commits', () => {
+		expect(
+			buildStatusString({
+				merged: false,
+				dirty: false,
+				commitsAhead: 0,
+				commitsBehind: 2,
+			}),
+		).toBe('2 behind')
+	})
+
+	test('behind and dirty: branch behind main with uncommitted changes', () => {
+		expect(
+			buildStatusString({
+				merged: false,
+				dirty: true,
+				commitsAhead: 0,
+				commitsBehind: 3,
+			}),
+		).toBe('3 behind, dirty')
+	})
+
+	test('ahead and behind: diverged branch with local and upstream commits', () => {
+		expect(
+			buildStatusString({
+				merged: false,
+				dirty: false,
+				commitsAhead: 3,
+				commitsBehind: 2,
+			}),
+		).toBe('3 ahead, 2 behind')
+	})
+
+	test('ahead, behind, and dirty: diverged branch with uncommitted changes', () => {
+		expect(
+			buildStatusString({
+				merged: false,
+				dirty: true,
+				commitsAhead: 4,
+				commitsBehind: 1,
+			}),
+		).toBe('4 ahead, 1 behind, dirty')
+	})
+
+	test('merged with behind: merged branch where main has moved forward', () => {
+		expect(
+			buildStatusString({
+				merged: true,
+				dirty: false,
+				commitsAhead: 0,
+				commitsBehind: 5,
+				mergeMethod: 'ancestor',
+			}),
+		).toBe('merged')
+	})
+
+	test('merged squash with behind: squash-merged branch where main has moved forward', () => {
+		expect(
+			buildStatusString({
+				merged: true,
+				dirty: false,
+				commitsAhead: 0,
+				commitsBehind: 3,
+				mergeMethod: 'squash',
+			}),
+		).toBe('merged (squash)')
+	})
+
+	test('behind zero is treated as no behind count', () => {
+		expect(
+			buildStatusString({
+				merged: false,
+				dirty: false,
+				commitsAhead: 0,
+				commitsBehind: 0,
+			}),
+		).toBe('unknown')
+	})
 })

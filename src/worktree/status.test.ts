@@ -134,4 +134,62 @@ describe('getWorktreeStatus', () => {
 		expect(dirty).toBeDefined()
 		expect(dirty!.dirty).toBe(true)
 	})
+
+	test('mergeMethod is undefined for unmerged branch', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-open')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/open', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'work.txt'), 'in progress')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'wip'], { cwd: wtPath })
+
+		const statuses = await getWorktreeStatus(gitRoot)
+		const open = statuses.find((s) => s.branch === 'feat/open')
+
+		expect(open).toBeDefined()
+		expect(open!.mergeMethod).toBeUndefined()
+	})
+
+	test('mergeMethod is ancestor for a regular merge', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-ancestor')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/ancestor', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'feature.txt'), 'ancestor work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'ancestor commit'], { cwd: wtPath })
+
+		// Merge into main (ancestor-style -- the feature commit becomes reachable from main)
+		await spawnAndCollect(
+			['git', 'merge', '--no-ff', '-m', 'Merge feat/ancestor', 'feat/ancestor'],
+			{ cwd: gitRoot },
+		)
+
+		const statuses = await getWorktreeStatus(gitRoot)
+		const merged = statuses.find((s) => s.branch === 'feat/ancestor')
+
+		expect(merged).toBeDefined()
+		expect(merged!.mergeMethod).toBe('ancestor')
+	})
+
+	test('mergeMethod is squash for a squash-merge', async () => {
+		const wtPath = path.join(gitRoot, '.worktrees', 'feat-squash')
+		await spawnAndCollect(['git', 'worktree', 'add', '-b', 'feat/squash', wtPath], {
+			cwd: gitRoot,
+		})
+		fs.writeFileSync(path.join(wtPath, 'squash.txt'), 'squash work')
+		await spawnAndCollect(['git', 'add', '.'], { cwd: wtPath })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash commit'], { cwd: wtPath })
+
+		// Squash-merge into main
+		await spawnAndCollect(['git', 'merge', '--squash', 'feat/squash'], { cwd: gitRoot })
+		await spawnAndCollect(['git', 'commit', '-m', 'squash merge feat/squash'], { cwd: gitRoot })
+
+		const statuses = await getWorktreeStatus(gitRoot)
+		const squashed = statuses.find((s) => s.branch === 'feat/squash')
+
+		expect(squashed).toBeDefined()
+		expect(squashed!.mergeMethod).toBe('squash')
+	})
 })

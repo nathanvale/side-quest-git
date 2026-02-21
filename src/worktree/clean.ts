@@ -8,6 +8,7 @@
  */
 
 import { spawnAndCollect } from '@side-quest/core/spawn'
+import { createBackupRef } from './backup.js'
 import { listWorktrees } from './list.js'
 import { listOrphanBranches } from './orphans.js'
 import type {
@@ -26,6 +27,29 @@ export interface CleanOptions {
 	deleteBranches?: boolean
 	/** Also clean orphan branches (branches without worktrees). */
 	includeOrphans?: boolean
+	/**
+	 * Skip the shallow clone guard during merge detection.
+	 *
+	 * Why: CI environments often use shallow clones. Pass this when clone depth
+	 * is known to be sufficient for the branches under inspection.
+	 */
+	shallowOk?: boolean
+	/**
+	 * Override the Layer 3 cherry detection timeout in milliseconds.
+	 *
+	 * Why: Allows callers (e.g. `--timeout` CLI flag) to tune squash detection
+	 * per-run without touching env vars. Precedence: this value >
+	 * SIDE_QUEST_DETECTION_TIMEOUT_MS env var > default 5000ms.
+	 */
+	detectionTimeout?: number
+	/**
+	 * Max worktrees/branches to process in parallel during listing.
+	 *
+	 * Why: Allows callers to tune git subprocess fan-out per-run without
+	 * touching env vars. Forwarded to listWorktrees and listOrphanBranches.
+	 * Precedence: this value > SIDE_QUEST_CONCURRENCY env var > DEFAULT_CONCURRENCY (4).
+	 */
+	concurrency?: number
 }
 
 /**
@@ -49,9 +73,16 @@ export async function cleanWorktrees(
 		dryRun = false,
 		deleteBranches = false,
 		includeOrphans = false,
+		shallowOk,
+		detectionTimeout,
+		concurrency,
 	} = options
 
-	const worktrees = await listWorktrees(gitRoot)
+	const worktrees = await listWorktrees(gitRoot, {
+		shallowOk,
+		detectionTimeout,
+		concurrency,
+	})
 	const deleted: CleanedWorktree[] = []
 	const skipped: SkippedWorktree[] = []
 
@@ -120,6 +151,19 @@ export async function cleanWorktrees(
 
 			let branchDeleted = false
 			if (deleteBranches) {
+				// Create a backup ref before deletion so the branch is recoverable
+				// via `worktree recover <branch>`. Best-effort: if backup creation
+				// fails (e.g. the branch ref doesn't resolve), log and continue
+				// rather than blocking the whole clean operation.
+				try {
+					await createBackupRef(gitRoot, wt.branch)
+				} catch (backupErr) {
+					console.error(
+						JSON.stringify({
+							warning: `backup ref creation failed for "${wt.branch}": ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+						}),
+					)
+				}
 				const deleteFlag = force ? '-D' : '-d'
 				const branchResult = await spawnAndCollect(
 					['git', 'branch', deleteFlag, wt.branch],
@@ -148,13 +192,28 @@ export async function cleanWorktrees(
 	// Handle orphan branches
 	let orphansDeleted: OrphanBranch[] = []
 	if (includeOrphans) {
-		const orphans = await listOrphanBranches(gitRoot)
+		const orphans = await listOrphanBranches(gitRoot, {
+			shallowOk,
+			detectionTimeout,
+			concurrency,
+		})
 		const mergedOrphans = force ? orphans : orphans.filter((o) => o.merged)
 
 		if (dryRun) {
 			orphansDeleted = mergedOrphans
 		} else {
 			for (const orphan of mergedOrphans) {
+				// Create a backup ref before deletion for recoverability.
+				// Best-effort: log and continue if creation fails.
+				try {
+					await createBackupRef(gitRoot, orphan.branch)
+				} catch (backupErr) {
+					console.error(
+						JSON.stringify({
+							warning: `backup ref creation failed for orphan "${orphan.branch}": ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+						}),
+					)
+				}
 				const deleteFlag = force ? '-D' : '-d'
 				const result = await spawnAndCollect(
 					['git', 'branch', deleteFlag, orphan.branch],

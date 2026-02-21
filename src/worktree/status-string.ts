@@ -64,21 +64,43 @@ export function buildStatusString(input: StatusInput): string {
 		return input.mergeMethod === 'squash' ? 'merged (squash)' : 'merged'
 	}
 
-	// Not merged, has commits ahead with uncommitted changes
+	const commitsBehind = input.commitsBehind ?? 0
+
+	// Not merged, has commits ahead with behind count and uncommitted changes
+	if (input.commitsAhead > 0 && commitsBehind > 0 && input.dirty) {
+		return `${input.commitsAhead} ahead, ${commitsBehind} behind, dirty`
+	}
+
+	// Not merged, has commits ahead with behind count
+	if (input.commitsAhead > 0 && commitsBehind > 0) {
+		return `${input.commitsAhead} ahead, ${commitsBehind} behind`
+	}
+
+	// Not merged, has commits ahead with uncommitted changes (no behind)
 	if (input.commitsAhead > 0 && input.dirty) {
 		return `${input.commitsAhead} ahead, dirty`
 	}
 
-	// Not merged, has commits ahead
+	// Not merged, has commits ahead (no behind, no dirty)
 	if (input.commitsAhead > 0) {
 		return `${input.commitsAhead} ahead`
 	}
 
-	// Only uncommitted changes, not ahead
+	// Not merged, only behind with uncommitted changes
+	if (commitsBehind > 0 && input.dirty) {
+		return `${commitsBehind} behind, dirty`
+	}
+
+	// Not merged, only behind
+	if (commitsBehind > 0) {
+		return `${commitsBehind} behind`
+	}
+
+	// Only uncommitted changes, not ahead, not behind
 	if (input.dirty) {
 		return 'dirty'
 	}
 
-	// Fallback for unexpected states (not merged, not ahead, not dirty)
+	// Fallback for unexpected states (not merged, not ahead, not behind, not dirty)
 	return 'unknown'
 }

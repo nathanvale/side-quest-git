@@ -1,0 +1,426 @@
+# @side-quest/git — llms.txt
+
+This is the canonical LLM-facing contract for this repository.
+
+## 1) What This Repo Is
+
+`@side-quest/git` is a Bun + TypeScript package that hardens Git-heavy workflows,
+with a strong focus on worktree lifecycle safety, merge-detection correctness,
+and local observability.
+
+Core value:
+
+1. Keep Git as source of truth.
+2. Add safe orchestration around destructive operations.
+3. Return structured JSON contracts suitable for scripts/agents.
+4. Preserve recovery paths when deleting branches/worktrees.
+
+## 2) Public API Surface
+
+Package exports from `package.json`:
+
+1. `@side-quest/git` (`./dist/index.js`)
+2. `@side-quest/git/safety`
+3. `@side-quest/git/git`
+4. `@side-quest/git/context`
+5. `@side-quest/git/cortex`
+6. `@side-quest/git/auto-commit`
+7. `@side-quest/git/logger`
+8. `@side-quest/git/jsonl`
+9. `@side-quest/git/worktree`
+10. `@side-quest/git/worktree/cli`
+11. `@side-quest/git/events`
+
+Root barrel (`src/index.ts`) re-exports all module barrels.
+
+## 3) Repository Map
+
+Top-level source domains (`src/*`):
+
+1. `worktree` (primary product surface)
+2. `events` (local HTTP/WS telemetry bus)
+3. `git` (git utility primitives)
+4. `safety` (policy checks)
+5. `context` (git context extraction/formatting)
+6. `auto-commit` (WIP checkpoint helpers)
+7. `cortex` (transcript salience extraction)
+8. `logger` (command log entries)
+9. `jsonl` (append helper)
+
+## 4) CLI Contract (Authoritative)
+
+Binary: `side-quest-git` (mapped to `dist/worktree/cli.js`).
+
+Top-level commands:
+
+1. `side-quest-git worktree <subcommand> ...`
+2. `side-quest-git events <start|tail> ...`
+
+### Worktree subcommands
+
+1. `create <branch> [--no-install] [--no-fetch] [--no-attach] [--base <ref>]`
+2. `list [--all] [--include-orphans] [--timeout <ms>] [--shallow-ok]`
+3. `delete <branch> [--force] [--delete-branch]`
+4. `check <branch> [--timeout <ms>] [--shallow-ok]`
+5. `init`
+6. `install <path> [--force]`
+7. `sync <branch> [--dry-run]` or `sync --all [--dry-run]`
+8. `status [--pr] [--watch] [--interval <seconds>]`
+9. `orphans [--timeout <ms>] [--shallow-ok]`
+10. `clean [--dry-run] [--force] [--delete-branches] [--include-orphans] [--timeout <ms>] [--shallow-ok]`
+11. `recover`
+12. `recover <branch>`
+13. `recover --cleanup [--max-age <days>]`
+
+### Events subcommands
+
+1. `events start [--port <1..65535>]`
+2. `events tail [--type <eventType>]`
+
+## 5) Worktree Domain (Primary Focus)
+
+The worktree domain is the highest-risk and highest-value surface.
+
+### 5.1 Core files
+
+1. `src/worktree/cli.ts`
+2. `src/worktree/create.ts`
+3. `src/worktree/list.ts`
+4. `src/worktree/merge-status.ts`
+5. `src/worktree/delete.ts`
+6. `src/worktree/clean.ts`
+7. `src/worktree/orphans.ts`
+8. `src/worktree/backup.ts`
+9. `src/worktree/status.ts`
+10. `src/worktree/watch.ts`
+11. `src/worktree/sync.ts`
+12. `src/worktree/install.ts`
+13. `src/worktree/config.ts`
+14. `src/worktree/detection-issue.ts`
+15. `src/worktree/list-health.ts`
+16. `src/worktree/types.ts`
+
+### 5.2 Data contracts (stable shapes)
+
+Primary output interfaces in `src/worktree/types.ts`:
+
+1. `CreateResult`
+2. `WorktreeInfo` (list rows)
+3. `DeleteResult`
+4. `CleanResult` / `CleanedWorktree` / `SkippedWorktree`
+5. `OrphanBranch`
+6. `SyncResult` / `SyncedFile`
+7. `InstallResult`
+8. `WorktreeStatus` / `PullRequestInfo`
+9. `MergeMethod = 'ancestor' | 'squash'`
+
+Detection issue contract (`src/worktree/detection-issue.ts`):
+
+1. `DetectionIssue = { code, severity, source, message, countsReliable }`
+2. Stable codes in `DETECTION_CODES`:
+   `SHALLOW_CLONE`, `SHALLOW_CHECK_FAILED`, `MERGE_BASE_FAILED`,
+   `MERGE_BASE_LOOKUP_FAILED`, `CHERRY_TIMEOUT`, `CHERRY_FAILED`,
+   `CHERRY_EMPTY`, `CHERRY_INVALID`, `COMMIT_TREE_FAILED`,
+   `GIT_PATH_FAILED`, `DETECTION_DISABLED`, `ENRICHMENT_FAILED`,
+   `DETECTION_ABORTED`.
+
+Health contract (`src/worktree/list-health.ts`):
+
+1. `ListHealthMetadata = { total, degradedCount, fatalCount, allFailed }`
+2. `allFailed` is the systemic-failure signal.
+
+### 5.3 Command output contracts (important)
+
+1. `worktree list`:
+   - default: `{ worktrees: WorktreeInfo[], health: ListHealthMetadata }`
+   - with `--include-orphans`:
+     `{ worktrees, orphans, health, orphanHealth }`
+   - CLI sets `process.exitCode = 1` when `health.allFailed === true`.
+2. `worktree orphans`:
+   - `{ orphans: OrphanBranch[], health: ListHealthMetadata }`
+   - non-zero exit when orphan health is `allFailed`.
+3. `worktree status`:
+   - `WorktreeStatus[]`
+4. `worktree create`:
+   - `CreateResult` (includes `attached` and optional `syncResult`)
+5. `worktree check`:
+   - `DeleteCheck` snapshot (exists/dirty/merged/status/mergeMethod/issues)
+6. `worktree delete`:
+   - `DeleteResult`
+7. `worktree clean`:
+   - `CleanResult`
+8. `worktree recover`:
+   - no args: `BackupRef[]`
+   - `<branch>`: `{ restored: <branch> }`
+   - `--cleanup`: `{ cleaned: string[], count: number }`
+
+### 5.4 Lifecycle semantics
+
+#### Create/Attach (`create.ts`)
+
+1. Branch path is sanitized by replacing `/` with `-` for directory naming.
+2. If path exists:
+   - `attach !== false` and checked-out branch matches -> attach/sync path.
+   - mismatch -> hard error (refuses to attach to wrong branch).
+3. Base selection precedence:
+   - existing local branch
+   - existing remote branch
+   - explicit `--base <ref>`
+   - remote default fallback (`origin/main` then `origin/master` then `HEAD`)
+4. Copies config-selected files from main worktree.
+5. Runs `postCreate` unless `--no-install`.
+
+#### List/Enrichment (`list.ts`)
+
+1. Parses `git worktree list --porcelain` preserving order.
+2. Main/detached entries skip expensive merge detection.
+3. Feature branches run merge detection + upstream-gone concurrently.
+4. Per-item timeout via `AbortSignal.timeout(itemTimeoutMs)`.
+5. On enrichment error, emits fallback `status: 'enrichment failed'` +
+   structured `ENRICHMENT_FAILED` issue.
+
+#### Orphans (`orphans.ts`)
+
+1. Uses lightweight branch-set extraction from porcelain worktree list.
+2. Excludes protected branches (`main`, `master`, `develop` by default).
+3. Classifies orphan status as `merged|ahead|pristine|unknown`.
+4. Includes same timeout/concurrency/error-fallback behavior as list.
+
+#### Delete/Check (`delete.ts`)
+
+1. Existence check uses exact porcelain path matching (prefix-safe).
+2. `checkBeforeDelete` returns non-destructive state snapshot.
+3. `deleteWorktree` runs detection before removal to preserve `mergeMethod`.
+4. Detection failures are non-fatal for delete (warn + continue).
+5. Optional `--delete-branch` best-effort creates backup ref before delete.
+
+#### Clean (`clean.ts`)
+
+1. Never deletes main worktree (`reason: 'is-main'`).
+2. Without force: skips dirty and unmerged entries.
+3. With `--delete-branches`, attempts backup refs before branch deletion.
+4. Optional orphan cleanup via `--include-orphans`.
+5. Dry-run reports intended actions without side effects.
+
+#### Recover (`backup.ts`)
+
+1. Backup refs are `refs/backup/<branch>`.
+2. Creation uses `git update-ref --create-reflog`.
+3. Restore recreates `refs/heads/<branch>` from backup ref.
+4. Cleanup retention uses backup-ref reflog timestamp (ref-write age),
+   not commit author/commit date.
+
+#### Status/Watch (`status.ts`, `watch.ts`)
+
+1. `status` enriches with ahead/behind + last commit info.
+2. Optional `--pr` queries GitHub via `gh pr view` (best effort).
+3. `--watch` renders TTY table; non-TTY is rejected.
+
+### 5.5 Merge detection engine (critical)
+
+`detectMergeStatus` (`merge-status.ts`) uses a three-layer cascade:
+
+1. Layer 1: `git merge-base --is-ancestor`
+2. Layer 2: `git rev-list --left-right --count`
+3. Layer 3: squash-equivalence using `git commit-tree` + `git cherry`
+   in isolated object env.
+
+Key behavior:
+
+1. Layer 3 only runs when enabled and ahead count <= threshold.
+2. Detection supports AbortSignal and explicit timeout behavior.
+3. Top-level `AbortError` in layers 1/2 maps to `DETECTION_ABORTED`.
+4. Layer 3 timeout/abort maps to `CHERRY_TIMEOUT` semantics.
+
+Invariants:
+
+1. Successful merge detection maps merge method:
+   - regular/rebase integrated -> `mergeMethod: 'ancestor'`
+   - squash integrated -> `mergeMethod: 'squash'`
+2. Legacy `detectionError` is derived from structured `issues`.
+3. Errors should degrade per-entry, not collapse full list/orphan calls.
+
+### 5.6 Worktree env/flag controls and precedence
+
+Detection-level controls:
+
+1. `SIDE_QUEST_NO_DETECTION=1`
+   - bypasses all detection layers and shallow checks.
+2. `SIDE_QUEST_NO_SQUASH_DETECTION=1`
+   - disables layer 3 only.
+3. `SIDE_QUEST_SHALLOW_OK=1` or CLI `--shallow-ok`
+   - bypasses shallow guard.
+4. `SIDE_QUEST_DETECTION_TIMEOUT_MS` or CLI `--timeout`
+   - detection timeout precedence: option > env > default 5000.
+5. `SIDE_QUEST_ITEM_TIMEOUT_MS`
+   - per-item enrichment timeout in list/orphans (default 10000).
+6. `SIDE_QUEST_CONCURRENCY`
+   - concurrency precedence: option > env > `DEFAULT_CONCURRENCY` (4).
+
+### 5.7 Safety guarantees and sharp edges
+
+Safety guarantees:
+
+1. Main worktree is not deleted by `clean`.
+2. Exact worktree path matching avoids prefix-collision false positives.
+3. Backup refs exist as recovery path for branch deletes.
+4. CLI uses `process.exitCode` in systemic failure paths so stdout can flush.
+
+Sharp edges:
+
+1. JSON contract changes are breaking for script consumers.
+2. Sentinel values (e.g. `-1`) represent unknown/unreliable counts.
+3. Event emission is best-effort and intentionally non-blocking.
+4. Shallow clone behavior can produce incomplete detection unless explicitly
+   bypassed with understanding.
+
+## 6) Events and Observability Domain
+
+Core files:
+
+1. `src/events/server.ts`
+2. `src/events/store.ts`
+3. `src/events/client.ts`
+4. `src/events/emit.ts`
+5. `src/events/schema.ts`
+6. `src/events/types.ts`
+7. `src/events/cache-key.ts`
+
+Server routes:
+
+1. `POST /events`
+2. `GET /events`
+3. `GET /health`
+4. `GET /ws` (WebSocket)
+
+Event types (`src/events/types.ts`):
+
+1. CLI events:
+   `worktree.created`, `worktree.deleted`, `worktree.synced`,
+   `worktree.cleaned`, `worktree.attached`, `worktree.installed`
+2. Hook events:
+   `session.started`, `session.ended`, `session.compacted`,
+   `safety.blocked`, `command.executed`
+
+Operational notes:
+
+1. `events start` binds local server and writes PID/port discovery files.
+2. CLI emission is fire-and-forget with timeout and silent-fail behavior.
+3. Stale PID files are handled by process liveness checks.
+
+## 7) Other Domains
+
+### Git utilities (`src/git/*`)
+
+Exports:
+
+1. repo/root detection (`getGitRoot`, `getMainRoot`, `isGitRepo`)
+2. branch helpers (`getCurrentBranch`, `getMainBranch`)
+3. status parsing and summaries (`parseGitStatus`, `getGitStateSummary`)
+
+### Safety (`src/safety/*`)
+
+1. command-risk policy (`checkCommand`, blocked patterns)
+2. file-edit policy (`checkFileEdit`)
+3. commit-intent detection (`isCommitCommand`)
+
+### Context (`src/context/*`)
+
+1. git context extraction (`getGitContext`)
+2. renderers (`formatContext`, `formatSystemMessage`)
+
+### Auto-commit (`src/auto-commit/*`)
+
+1. status parsing + commit helper flow (`createAutoCommit`)
+2. commit subject generation and truncation helpers
+
+### Cortex (`src/cortex/*`)
+
+1. transcript salience extraction (`extractFromTranscript`)
+2. pattern-based signal capture for memory/context systems
+
+### Logger + JSONL (`src/logger/*`, `src/jsonl/*`)
+
+1. normalized command-log entry creation
+2. append JSONL utility
+
+## 8) CI, Quality, and Release Surface
+
+Important workflows (`.github/workflows/*`):
+
+1. `pr-quality.yml` (lint/typecheck/tests/quality gates)
+2. `publish.yml` (changesets release/publish)
+3. `package-hygiene.yml`
+4. `workflow-lint.yml`
+5. `security.yml`, `codeql.yml`, `dependency-review.yml`
+6. `worktree-smoke.yml` (integration smoke gate)
+
+Important scripts:
+
+1. `bun run validate`
+2. `bun run benchmark` (detection benchmark)
+3. `bun run smoke:worktree`
+4. `scripts/worktree-smoke.sh`
+
+Changesets:
+
+1. Release/versioning is driven by `.changeset/*` files.
+2. Changelog generation uses GitHub metadata integration.
+
+## 9) Worktree Smoke Gate (Integration Contract)
+
+Smoke harness: `scripts/worktree-smoke.sh`
+
+Suites:
+
+1. `core` (end-to-end worktree lifecycle + recoverability)
+2. `events` (event emission/server integration)
+3. `shallow` (shallow-clone guard behavior)
+
+Env controls:
+
+1. `WORKTREE_SMOKE_KEEP_TMP=1` keep temp repos
+2. `WORKTREE_SMOKE_ARTIFACT_DIR=<path>` copy artifacts
+3. `SQ_GIT_CLI="..."` override CLI invocation
+
+CI gate: `.github/workflows/worktree-smoke.yml`
+
+## 10) LLM Change Guidance
+
+When editing this repo:
+
+1. Treat worktree JSON outputs as API contracts.
+2. Preserve safety invariants in fallback/error paths.
+3. Prefer structured `issues` over ad hoc error strings.
+4. Keep delete/clean operations recoverable.
+5. Add or update integration tests for behavior changes in worktree flows.
+6. If changing detection semantics, validate list/check/delete/clean/orphans
+   interactions as a set.
+
+## 11) Known Contract Changes Already Landed
+
+Breaking change already in-flight:
+
+1. `worktree list --json` changed from bare array to object with
+   `worktrees` + `health` (plus `orphans`/`orphanHealth` with
+   `--include-orphans`).
+
+Consumer migration pattern:
+
+```bash
+# Old
+bunx @side-quest/git worktree list --json | jq '.[]'
+
+# New
+bunx @side-quest/git worktree list --json | jq '.worktrees[]'
+```
+
+## 12) Fast Learning Path
+
+1. Read `src/worktree/cli.ts` for command contract and exit semantics.
+2. Read `src/worktree/list.ts` + `src/worktree/merge-status.ts` for the core
+   detection pipeline.
+3. Read `src/worktree/delete.ts` + `src/worktree/clean.ts` +
+   `src/worktree/backup.ts` for destructive-path safety and recovery.
+4. Read `src/events/server.ts` + `src/events/emit.ts` for observability model.
+5. Run `bun run smoke:worktree` to validate operational understanding.

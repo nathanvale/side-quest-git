@@ -10,12 +10,76 @@
 import { processInParallelChunks } from '@side-quest/core/concurrency'
 import { spawnAndCollect } from '@side-quest/core/spawn'
 import { getMainBranch } from '../git/main-branch.js'
-import { listWorktrees } from './list.js'
+import { DEFAULT_CONCURRENCY } from './constants.js'
+import { debugLog } from './debug.js'
+import { createDetectionIssue, DETECTION_CODES } from './detection-issue.js'
+import { parseEnvInt } from './env.js'
 import { checkIsShallow, detectMergeStatus } from './merge-status.js'
 import type { OrphanBranch, OrphanStatus } from './types.js'
+import { checkUpstreamGone } from './upstream-gone.js'
 
 /** Default branches that should never be considered orphans. */
 const DEFAULT_PROTECTED = ['main', 'master', 'develop']
+
+/**
+ * Get the set of branch names that currently have worktrees.
+ *
+ * Why: `listWorktrees()` does full enrichment (merge detection, dirty checks,
+ * etc.) which is wasteful when we only need branch names to filter orphans.
+ * Parsing raw porcelain output is orders of magnitude cheaper.
+ *
+ * @param gitRoot - Main worktree root
+ * @returns Set of branch names that have worktrees
+ */
+export async function getWorktreeBranches(
+	gitRoot: string,
+): Promise<Set<string>> {
+	const result = await spawnAndCollect(
+		['git', 'worktree', 'list', '--porcelain'],
+		{ cwd: gitRoot },
+	)
+	if (result.exitCode !== 0) {
+		throw new Error(`Failed to list worktrees: ${result.stderr.trim()}`)
+	}
+
+	const branches = new Set<string>()
+	for (const line of result.stdout.split('\n')) {
+		// Porcelain format: "branch refs/heads/<name>"
+		if (line.startsWith('branch refs/heads/')) {
+			branches.add(line.slice('branch refs/heads/'.length).trim())
+		}
+	}
+	return branches
+}
+
+/** Options for listOrphanBranches. */
+export interface ListOrphanBranchesOptions {
+	/** Branches that should never be considered orphans. */
+	protectedBranches?: readonly string[]
+	/**
+	 * Override the Layer 3 cherry detection timeout in milliseconds.
+	 *
+	 * Why: Allows callers (e.g. `--timeout` CLI flag) to tune squash detection
+	 * per-run without touching env vars. Precedence: this value >
+	 * SIDE_QUEST_DETECTION_TIMEOUT_MS env var > default 5000ms.
+	 */
+	detectionTimeout?: number
+	/**
+	 * Skip the shallow clone guard during merge detection.
+	 *
+	 * Why: CI environments often use shallow clones. Pass this when clone depth
+	 * is known to be sufficient for the branches under inspection.
+	 */
+	shallowOk?: boolean
+	/**
+	 * Max branches to process in parallel.
+	 *
+	 * Why: Allows callers to tune git subprocess fan-out per-run without
+	 * touching env vars. Precedence: this value >
+	 * SIDE_QUEST_CONCURRENCY env var > DEFAULT_CONCURRENCY (4).
+	 */
+	concurrency?: number
+}
 
 /**
  * List local branches that have no associated worktree.
@@ -25,12 +89,12 @@ const DEFAULT_PROTECTED = ['main', 'master', 'develop']
  * their merge status, and lets batch cleanup tools decide what to do.
  *
  * @param gitRoot - Main worktree root
- * @param options - Options for filtering
+ * @param options - Options for filtering and detection tuning
  * @returns Array of orphan branches with status info
  */
 export async function listOrphanBranches(
 	gitRoot: string,
-	options: { protectedBranches?: readonly string[] } = {},
+	options: ListOrphanBranchesOptions = {},
 ): Promise<OrphanBranch[]> {
 	const protectedSet = new Set(options.protectedBranches ?? DEFAULT_PROTECTED)
 
@@ -48,9 +112,10 @@ export async function listOrphanBranches(
 		.split('\n')
 		.filter((b) => b.length > 0)
 
-	// Get branches that have worktrees
-	const worktrees = await listWorktrees(gitRoot)
-	const worktreeBranches = new Set(worktrees.map((wt) => wt.branch))
+	// Get branches that have worktrees using lightweight porcelain parse.
+	// Why: avoids full enrichment (merge detection, dirty checks) that
+	// listWorktrees() would do -- we only need branch names here.
+	const worktreeBranches = await getWorktreeBranches(gitRoot)
 
 	// Get main branch for merge comparison
 	const mainBranch = await getMainBranch(gitRoot)
@@ -60,15 +125,49 @@ export async function listOrphanBranches(
 		(branch) => !protectedSet.has(branch) && !worktreeBranches.has(branch),
 	)
 
-	const isShallow = await checkIsShallow(gitRoot)
+	// Skip shallow check when detection is fully disabled -- no git subprocesses
+	// should run at all during an incident (SIDE_QUEST_NO_DETECTION=1).
+	const isShallow =
+		process.env.SIDE_QUEST_NO_DETECTION === '1'
+			? null
+			: await checkIsShallow(gitRoot)
 
-	return processInParallelChunks({
+	// Per-item timeout: same safety net as list.ts. A slow branch detection
+	// (e.g. huge history, slow disk) should not block the entire chunk.
+	const itemTimeoutMs = parseEnvInt('SIDE_QUEST_ITEM_TIMEOUT_MS', 10000, {
+		min: 1,
+	})
+
+	const concurrency =
+		options.concurrency ??
+		parseEnvInt('SIDE_QUEST_CONCURRENCY', DEFAULT_CONCURRENCY, { min: 1 })
+
+	const total = orphanCandidates.length
+	let processed = 0
+	let failureCount = 0
+	const enrichStart = Date.now()
+
+	const results = await processInParallelChunks({
 		items: orphanCandidates,
-		chunkSize: 4,
+		chunkSize: concurrency,
 		processor: async (branch) => {
-			const detection = await detectMergeStatus(gitRoot, branch, mainBranch, {
-				isShallow,
-			})
+			const signal = AbortSignal.timeout(itemTimeoutMs)
+
+			// Run merge detection and upstream-gone check concurrently -- they are
+			// independent git calls and neither blocks the other.
+			const [detection, upstreamGone] = await Promise.all([
+				detectMergeStatus(gitRoot, branch, mainBranch, {
+					isShallow,
+					signal,
+					...(options.detectionTimeout !== undefined
+						? { timeout: options.detectionTimeout }
+						: {}),
+					...(options.shallowOk !== undefined
+						? { shallowOk: options.shallowOk }
+						: {}),
+				}),
+				checkUpstreamGone(gitRoot, branch),
+			])
 
 			let status: OrphanStatus
 			let commitsAhead: number
@@ -91,6 +190,9 @@ export async function listOrphanBranches(
 				commitsAhead = -1
 			}
 
+			processed++
+			debugLog('enrichment:progress', { branch, processed, total })
+
 			return {
 				branch,
 				status,
@@ -98,15 +200,47 @@ export async function listOrphanBranches(
 				merged: detection.merged,
 				mergeMethod: detection.mergeMethod,
 				detectionError: detection.detectionError,
+				issues: detection.issues,
+				// Only include the field when it is true to keep output clean for the common case.
+				...(upstreamGone ? { upstreamGone: true } : {}),
 			}
 		},
-		onError: (branch, error) => ({
-			branch,
-			status: 'unknown' as OrphanStatus,
-			commitsAhead: -1,
-			merged: false,
-			mergeMethod: undefined,
-			detectionError: error instanceof Error ? error.message : String(error),
-		}),
+		onError: (branch, error) => {
+			const errorMsg = error instanceof Error ? error.message : String(error)
+			const issues = [
+				createDetectionIssue(
+					DETECTION_CODES.ENRICHMENT_FAILED,
+					'error',
+					'enrichment',
+					errorMsg,
+					false,
+				),
+			]
+			processed++
+			failureCount++
+			debugLog('enrichment:error', {
+				branch,
+				error: errorMsg,
+				processed,
+				total,
+			})
+			return {
+				branch,
+				status: 'unknown' as OrphanStatus,
+				commitsAhead: -1,
+				merged: false,
+				mergeMethod: undefined,
+				detectionError: errorMsg,
+				issues,
+			}
+		},
 	})
+
+	debugLog('enrichment:complete', {
+		total,
+		durationMs: Date.now() - enrichStart,
+		failureCount,
+	})
+
+	return results
 }

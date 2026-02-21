@@ -17,6 +17,8 @@ import { loadOrDetectConfig, writeConfig } from './config.js'
 import { createWorktree } from './create.js'
 import { checkBeforeDelete, deleteWorktree } from './delete.js'
 import { listWorktrees } from './list.js'
+import { computeListHealth, computeOrphanHealth } from './list-health.js'
+import { cleanupStaleTempDirs } from './merge-status.js'
 
 function output(data: unknown): void {
 	console.log(JSON.stringify(data, null, 2))
@@ -28,6 +30,21 @@ function fail(message: string): never {
 }
 
 async function main(): Promise<void> {
+	// Best-effort cleanup of any temp dirs this process created.
+	// The finally block in createIsolatedObjectEnv handles the normal path;
+	// this handler catches SIGTERM (e.g. container shutdown, `kill <pid>`).
+	// Exit code 143 = 128 + 15 (SIGTERM), the POSIX convention.
+	//
+	// Why process.exitCode instead of process.exit():
+	// Setting exitCode lets the event loop drain so that any other SIGTERM
+	// handler (e.g. the event server's server.stop()) has a chance to run
+	// before the process exits. process.exit() would terminate immediately,
+	// skipping those handlers.
+	process.on('SIGTERM', () => {
+		cleanupStaleTempDirs()
+		process.exitCode = 143
+	})
+
 	const { command, subcommand, positional, flags } = parseArgs(
 		process.argv.slice(2),
 	)
@@ -82,19 +99,43 @@ async function main(): Promise<void> {
 		}
 
 		case 'list': {
-			const worktrees = await listWorktrees(gitRoot)
 			const showAll = flags.all === true
 			const includeOrphans = flags['include-orphans'] === true
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
+			const worktrees = await listWorktrees(gitRoot, {
+				detectionTimeout,
+				shallowOk,
+			})
 			const filtered = showAll
 				? worktrees
 				: worktrees.filter((worktree) => !worktree.isMain)
 
+			// Health check against the full (unfiltered) list -- we want to know
+			// whether the enrichment pipeline itself is broken, regardless of the
+			// --all filter. Using the filtered list would miss failures on main.
+			const health = computeListHealth(worktrees)
+
 			if (includeOrphans) {
 				const { listOrphanBranches } = await import('./orphans.js')
-				const orphans = await listOrphanBranches(gitRoot)
-				output({ worktrees: filtered, orphans })
+				const orphans = await listOrphanBranches(gitRoot, {
+					detectionTimeout,
+					shallowOk,
+				})
+				const orphanHealth = computeOrphanHealth(orphans)
+				output({ worktrees: filtered, orphans, health, orphanHealth })
 			} else {
-				output(filtered)
+				output({ worktrees: filtered, health })
+			}
+
+			// Exit non-zero when every worktree enrichment failed -- this signals
+			// a systemic problem (broken git, bad repo state) rather than a
+			// per-entry issue that callers might choose to tolerate.
+			// Use process.exitCode + return instead of process.exit(1) so that
+			// piped stdout can fully flush before the process terminates.
+			if (health.allFailed) {
+				process.exitCode = 1
+				return
 			}
 			break
 		}
@@ -125,9 +166,16 @@ async function main(): Promise<void> {
 		case 'check': {
 			const branchName = args[0]
 			if (!branchName) {
-				fail('Usage: side-quest-git worktree check <branch-name>')
+				fail(
+					'Usage: side-quest-git worktree check <branch-name> [--timeout <ms>] [--shallow-ok]',
+				)
 			}
-			const result = await checkBeforeDelete(gitRoot, branchName)
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
+			const result = await checkBeforeDelete(gitRoot, branchName, {
+				detectionTimeout,
+				shallowOk,
+			})
 			output(result)
 			break
 		}
@@ -225,9 +273,24 @@ async function main(): Promise<void> {
 		}
 
 		case 'orphans': {
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
 			const { listOrphanBranches } = await import('./orphans.js')
-			const orphans = await listOrphanBranches(gitRoot)
-			output(orphans)
+			const orphans = await listOrphanBranches(gitRoot, {
+				detectionTimeout,
+				shallowOk,
+			})
+			const orphanHealth = computeOrphanHealth(orphans)
+			output({ orphans, health: orphanHealth })
+
+			// Exit non-zero when every orphan enrichment failed -- same systemic
+			// failure signal as the `list` command.
+			// Use process.exitCode + return instead of process.exit(1) so that
+			// piped stdout can fully flush before the process terminates.
+			if (orphanHealth.allFailed) {
+				process.exitCode = 1
+				return
+			}
 			break
 		}
 
@@ -236,6 +299,8 @@ async function main(): Promise<void> {
 			const force = flags.force === true
 			const deleteBranches = flags['delete-branches'] === true
 			const includeOrphans = flags['include-orphans'] === true
+			const shallowOk = flags['shallow-ok'] === true
+			const detectionTimeout = parseDetectionTimeoutMs(flags.timeout)
 
 			if (force && !dryRun) {
 				console.error(
@@ -252,6 +317,8 @@ async function main(): Promise<void> {
 				dryRun,
 				deleteBranches,
 				includeOrphans,
+				shallowOk,
+				detectionTimeout,
 			})
 			void emitCliEvent('worktree.cleaned', result, {
 				repo: path.basename(gitRoot),
@@ -262,9 +329,36 @@ async function main(): Promise<void> {
 			break
 		}
 
+		case 'recover': {
+			const { cleanupBackupRefs, listBackupRefs, restoreBackupRef } =
+				await import('./backup.js')
+
+			const cleanup = flags.cleanup === true
+			const maxAgeDays = parseMaxAgeDays(flags['max-age'])
+
+			if (cleanup) {
+				// `worktree recover --cleanup [--max-age <days>]`
+				const deleted = await cleanupBackupRefs(gitRoot, maxAgeDays)
+				output({ cleaned: deleted, count: deleted.length })
+				break
+			}
+
+			const targetBranch = args[0]
+			if (targetBranch) {
+				// `worktree recover <branch>` -- restore from backup
+				await restoreBackupRef(gitRoot, targetBranch)
+				output({ restored: targetBranch })
+			} else {
+				// `worktree recover` -- list all backup refs
+				const refs = await listBackupRefs(gitRoot)
+				output(refs)
+			}
+			break
+		}
+
 		default:
 			fail(
-				`Unknown worktree command: ${worktreeCommand || '(none)'}. Available: create, list, delete, check, init, install, sync, status, orphans, clean`,
+				`Unknown worktree command: ${worktreeCommand || '(none)'}. Available: create, list, delete, check, init, install, sync, status, orphans, clean, recover`,
 			)
 	}
 }
@@ -409,6 +503,60 @@ function parseWatchIntervalMs(
 	}
 
 	return intervalSeconds * 1000
+}
+
+/**
+ * Parse and validate the `--timeout` flag for detection-aware commands.
+ *
+ * Why: Invalid or non-positive values would either crash or produce a
+ * near-zero timeout that always expires, making detection useless.
+ * Returns undefined when the flag is absent so callers fall back to the
+ * env var or the 5000ms default in detectMergeStatus.
+ *
+ * @param timeoutFlag - Raw flag value from parseArgs
+ * @returns Timeout in milliseconds, or undefined if the flag was not set
+ */
+function parseDetectionTimeoutMs(
+	timeoutFlag: string | boolean | (string | boolean)[] | undefined,
+): number | undefined {
+	if (timeoutFlag === undefined) {
+		return undefined
+	}
+	if (typeof timeoutFlag !== 'string') {
+		fail('Invalid --timeout value: expected a positive integer in milliseconds')
+	}
+	if (!/^\d+$/.test(timeoutFlag)) {
+		fail('Invalid --timeout value: expected a positive integer in milliseconds')
+	}
+	const ms = Number.parseInt(timeoutFlag, 10)
+	if (!Number.isFinite(ms) || ms <= 0) {
+		fail('Invalid --timeout value: expected a positive integer in milliseconds')
+	}
+	return ms
+}
+
+/**
+ * Parse and validate the `--max-age` flag for `worktree recover --cleanup`.
+ *
+ * Why: A non-positive or non-numeric value would silently prune nothing
+ * or everything, which would be very surprising.
+ */
+function parseMaxAgeDays(
+	maxAgeFlag: string | boolean | (string | boolean)[] | undefined,
+): number {
+	if (maxAgeFlag === undefined) return 30
+	if (typeof maxAgeFlag !== 'string') {
+		fail(
+			'Invalid --max-age value: expected a positive integer (number of days)',
+		)
+	}
+	const days = Number.parseInt(maxAgeFlag, 10)
+	if (!Number.isFinite(days) || days < 1) {
+		fail(
+			'Invalid --max-age value: expected a positive integer (number of days)',
+		)
+	}
+	return days
 }
 
 main().catch((error) => {
