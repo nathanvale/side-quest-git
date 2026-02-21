@@ -79,9 +79,21 @@ export async function listWorktrees(
 		min: 1,
 	})
 
-	const concurrency =
+	const rawConcurrency =
 		options.concurrency ??
 		parseEnvInt('SIDE_QUEST_CONCURRENCY', DEFAULT_CONCURRENCY, { min: 1 })
+	const concurrency =
+		Number.isFinite(rawConcurrency) && rawConcurrency >= 1
+			? Math.floor(rawConcurrency)
+			: DEFAULT_CONCURRENCY
+
+	// Sanitise detectionTimeout: only pass finite positive values downstream.
+	const detectionTimeout =
+		options.detectionTimeout !== undefined &&
+		Number.isFinite(options.detectionTimeout) &&
+		options.detectionTimeout > 0
+			? options.detectionTimeout
+			: undefined
 
 	const total = entries.length
 	let processed = 0
@@ -99,7 +111,7 @@ export async function listWorktrees(
 				gitRoot,
 				isShallow,
 				signal,
-				options.detectionTimeout,
+				detectionTimeout,
 				options.shallowOk,
 			)
 			processed++

@@ -79,14 +79,15 @@ copy_artifacts() {
 
 cleanup() {
 	local status=$?
+	set +e
 	for pid in "${BG_PIDS[@]}"; do
 		kill "${pid}" >/dev/null 2>&1 || true
 		wait "${pid}" >/dev/null 2>&1 || true
 	done
-	copy_artifacts
+	copy_artifacts || true
 	if [[ "${KEEP_TMP}" != "1" ]]; then
 		for dir in "${TMP_DIRS[@]}"; do
-			rm -rf "${dir}"
+			rm -rf "${dir}" || true
 		done
 	fi
 	exit "${status}"
@@ -287,6 +288,11 @@ run_events_suite() {
 		for _ in $(seq 1 40); do
 			if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
 				break
+			fi
+			if ! kill -0 "${server_pid}" 2>/dev/null; then
+				echo "FAIL: events server exited early"
+				cat "${tmp_dir}/server.err" 2>/dev/null || true
+				exit 1
 			fi
 			sleep 0.1
 		done

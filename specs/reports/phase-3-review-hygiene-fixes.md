@@ -31,6 +31,7 @@ Fixed 3 hygiene issues (#50-#52) and documented #49 as no-code-change needed. Re
 ## Validator Report: validator-phase
 
 ### Checks Performed
+
 | Check | Result | Notes |
 |-------|--------|-------|
 | `bun test` | PASS | 435 tests passing |

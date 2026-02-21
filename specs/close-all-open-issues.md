@@ -381,7 +381,7 @@ Closes #14 #15 #17
   - Model: haiku
   - Resume: true
 
-## Step by Step Tasks
+## Step-by-step Tasks
 
 - Execute every step in order, top to bottom.
 - Before starting, run TaskCreate for each task so all team members can see the full plan.
