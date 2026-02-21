@@ -188,13 +188,13 @@ export function parseMaxAgeDays(maxAgeFlag: CliRawFlagValue): number {
 	if (value === undefined) {
 		return 30
 	}
-	if (typeof value !== 'string') {
+	if (typeof value !== 'string' || !/^\d+$/.test(value)) {
 		throw CliError.usage(
 			'Invalid --max-age value: expected a positive integer (number of days)',
 		)
 	}
 	const days = Number.parseInt(value, 10)
-	if (!Number.isFinite(days) || days < 1) {
+	if (days < 1) {
 		throw CliError.usage(
 			'Invalid --max-age value: expected a positive integer (number of days)',
 		)
